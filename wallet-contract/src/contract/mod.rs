@@ -74,6 +74,18 @@ impl Wallet for Contract {
     }
 }
 
+/// Initialize the contract with a public key (alternative to StateInit).
+#[near]
+impl Contract {
+    #[init]
+    pub fn w_init(public_key: String) -> Self {
+        let pk: PublicKey = public_key
+            .parse()
+            .unwrap_or_else(|_| env::panic_str("Failed to parse public key"));
+        Self(State::new(pk))
+    }
+}
+
 impl Contract {
     fn execute_signed(&mut self, msg: RequestMessage, proof: &str) -> Result<()> {
         if !self.is_signature_allowed() {

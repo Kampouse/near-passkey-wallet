@@ -21,13 +21,13 @@ pub trait ContractImpl {
 }
 
 /// Signing standard implemented by the contract
-type SS = <Contract as ContractImpl>::SigningStandard;
+pub type SS = <Contract as ContractImpl>::SigningStandard;
 
 /// Public key used by the signing standard
-type PublicKey = <SS as SigningStandard<&'static RequestMessage>>::PublicKey;
+pub type PublicKey = <SS as SigningStandard<&'static RequestMessage>>::PublicKey;
 
 /// State of the contract
-type State = crate::State<PublicKey>;
+pub type State = crate::State<PublicKey>;
 
 /// `#[near(contract_metadata(standard(...)))]` macro doesn't support
 /// adding more standards in separate attributes. So, we have to combine
