@@ -1,0 +1,23 @@
+[package]
+name = "defuse-webauthn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+defuse-crypto = { workspace = true, default-features = false }
+defuse-serde-utils = { workspace = true, features = ["base64"] }
+
+near-sdk.workspace = true
+
+[features]
+default = ["ed25519", "p256"]
+
+ed25519 = ["defuse-crypto/ed25519"]
+p256 = ["defuse-crypto/p256"]
+
+abi = ["defuse-crypto/abi", "defuse-serde-utils/abi"]

@@ -1,0 +1,131 @@
+[workspace]
+members = [
+  "wallet-contract",
+  "crates/bitmap",
+  "crates/borsh-utils",
+  "crates/crypto",
+  "crates/io-utils",
+  "crates/map-utils",
+  "crates/near/utils",
+  "crates/primitives/deadline",
+  "crates/serde-utils",
+  "crates/signatures/webauthn",
+  "crates/testing/randomness",
+  "crates/testing/utils",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+repository = "https://github.com/Kampouse/near-passkey-wallet"
+rust-version = "1.86.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+# Internal crates - paths relative to this workspace
+defuse-wallet.path = "wallet-contract"
+defuse-bitmap.path = "crates/bitmap"
+defuse-borsh-utils.path = "crates/borsh-utils"
+defuse-crypto = { path = "crates/crypto", default-features = false }
+defuse-io-utils.path = "crates/io-utils"
+defuse-map-utils.path = "crates/map-utils"
+defuse-near-utils.path = "crates/near/utils"
+defuse-deadline.path = "crates/primitives/deadline"
+defuse-serde-utils.path = "crates/serde-utils"
+defuse-randomness.path = "crates/testing/randomness"
+defuse-test-utils.path = "crates/testing/utils"
+defuse-webauthn = { path = "crates/signatures/webauthn", default-features = false }
+
+# External crates (versions from near-intents workspace)
+cargo-near-build = "0.9.0"
+near-account-id = "2.4.0"
+near-api = "0.8.6"
+near-api-types = "0.8.6"
+near-contract-standards = "5.24"
+near-crypto = "0.35.0"
+near-kit = { version = "0.9.0", default-features = false }
+near-openapi-types = "0.8.0"
+near-plugins = "0.5.1"
+near-sandbox = "0.3.9"
+near-sdk = "5.26.1"
+near-workspaces = "0.22"
+
+anyhow = "1"
+arbitrary = { version = "1", features = ["derive"] }
+array-util = "1"
+async-trait = "0.1.89"
+base64 = "0.22.1"
+bitflags = "2.9.1"
+bnum = { version = "0.13", features = ["borsh"] }
+borsh = "1.6.1"
+bs58 = "0.5.1"
+bytes = "1.11.1"
+cfg_eval = "0.1.2"
+chrono = { version = "0.4", default-features = false }
+clap = { version = "4.5.55", features = ["derive"] }
+curve25519-dalek = "4.1.3"
+data-url = "0.3"
+derive_more = "2.0"
+digest = { version = "0.11", default-features = false }
+digest-io = "0.1.0"
+ed25519-dalek = { version = "2.1", default-features = false }
+futures = "0.3"
+generic-array = "1"
+hex = "0.4"
+hex-literal = "1.0"
+hkdf = "0.13"
+impl-tools = "0.11"
+itertools = "0.14"
+k256 = { version = "0.13.4", default-features = false }
+moka = "0.12"
+num-traits = "0.2.19"
+p256 = { version = "0.13.2", default-features = false }
+proptest = "1.5"
+rand = "0.10"
+rand_core = "0.10"
+reqwest = "0.13.3"
+rstest = "0.25"
+schemars = "0.8"
+serde = "1"
+serde_json = "1"
+serde_with = "3.17"
+sha2 = "0.11"
+sha3 = "0.11"
+stellar-strkey = "0.0.13"
+strum = { version = "0.27", features = ["derive"] }
+thiserror = "2"
+tlb-ton = { version = "0.8", default-features = false }
+tokio = { version = "1.45", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
+tower = "0.5.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+zeroize = { version = "1.8", features = ["derive"] }
+
+wasmtime = { version = "=36.0.8", default-features = false, features = ["std"] }
+wasmtime-wasi = "=36.0.8"
+wit-bindgen = "0.49.0"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+as_conversions = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+too_long_first_doc_paragraph = "allow"
+unreadable_literal = "allow"
+
+[profile.release]
+codegen-units = 1
+opt-level = 3
+lto = true
+debug = false
+strip = "symbols"
+panic = "abort"
+overflow-checks = true

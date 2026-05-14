@@ -1,0 +1,21 @@
+[package]
+name = "defuse-map-utils"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = true
+
+[dependencies]
+impl-tools.workspace = true
+near-sdk = { workspace = true, optional = true }
+
+[features]
+default = ["near"]
+
+near = ["dep:near-sdk"]
+
+[lints]
+workspace = true
