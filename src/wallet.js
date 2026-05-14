@@ -344,7 +344,7 @@ export async function submitViaRelay(argsJson, walletAccountId, method = 'w_exec
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      method,
+      method_name: method,
       args_base64: argsBase64,
       wallet_account_id: walletAccountId || WALLET_CONTRACT,
     }),
