@@ -1,0 +1,15 @@
+{
+  "name": "wallet-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "wallet_wasm_bg.wasm",
+    "wallet_wasm.js",
+    "wallet_wasm.d.ts"
+  ],
+  "main": "wallet_wasm.js",
+  "types": "wallet_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

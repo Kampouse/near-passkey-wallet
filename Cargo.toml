@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "wallet-contract",
+  "wallet-wasm",
   "crates/bitmap",
   "crates/borsh-utils",
   "crates/crypto",

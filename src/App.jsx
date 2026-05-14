@@ -426,10 +426,13 @@ export default function App() {
 
     try {
       // Step 1: Load session key from IndexedDB
+      addLog(`[DEBUG] sessionKeys from contract: ${JSON.stringify(Object.keys(sessionKeys))}`)
+      const sessionKeyId = Object.keys(sessionKeys)[0] // Use first session key
+      addLog(`[DEBUG] Using sessionKeyId: "${sessionKeyId}"`)
       addLog(`Loading session key ${sessionKeyId}...`)
       const stored = await loadSessionKey(sessionKeyId, accountId)
       if (!stored) {
-        throw new Error('Session key not found in storage. Recreate it.')
+        throw new Error('Session key not found in IndexedDB. Click "Create Session Key" first.')
       }
       if (!stored.privateKey) {
         throw new Error('Session key private key is null (old storage format). Clear IndexedDB and recreate session key.')
