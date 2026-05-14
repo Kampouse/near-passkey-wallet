@@ -167,6 +167,16 @@ impl Contract {
         // 4. Verify ed25519 signature
         let msg_hash = msg.hash();
 
+        // DEBUG: Log borsh bytes and hash
+        let borsh_bytes = near_sdk::borsh::to_vec(&msg).unwrap_or_else(|_| unreachable!());
+        env::log_str(&format!("[SESSION DEBUG] borsh hex: {}", hex::encode(&borsh_bytes)));
+        env::log_str(&format!("[SESSION DEBUG] msg_hash hex: {}", hex::encode(&msg_hash)));
+        env::log_str(&format!("[SESSION DEBUG] nonce: {}", msg.nonce));
+        env::log_str(&format!("[SESSION DEBUG] created_at: {}", msg.created_at.into_timestamp().timestamp()));
+        env::log_str(&format!("[SESSION DEBUG] timeout: {:?}", msg.timeout));
+        env::log_str(&format!("[SESSION DEBUG] session_key_id: {}", session_key_id));
+        env::log_str(&format!("[SESSION DEBUG] signature: {}", signature));
+
         // Decode the public key from "ed25519:base58..." format
         let pk_bytes = decode_near_ed25519_public_key(&session_key.public_key)
             .ok_or_else(|| Error::InvalidSessionKey(session_key.public_key.clone()))?;
