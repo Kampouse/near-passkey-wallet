@@ -428,9 +428,13 @@ export default function App() {
       // Step 1: Load session key from IndexedDB
       addLog(`Loading session key ${sessionKeyId}...`)
       const stored = await loadSessionKey(sessionKeyId, accountId)
-      if (!stored || !stored.privateKey) {
+      if (!stored) {
         throw new Error('Session key not found in storage. Recreate it.')
       }
+      if (!stored.privateKey) {
+        throw new Error('Session key private key is null (old storage format). Clear IndexedDB and recreate session key.')
+      }
+      addLog(`Session key loaded: ${stored.publicKey?.slice(0, 20)}...`)
 
       // Step 2: Build empty RequestMessage (same as FaceID test)
       const nonce = Math.floor(Math.random() * 0xFFFFFFFF)
@@ -478,10 +482,18 @@ export default function App() {
         signature,
       }
 
-      addLog('Submitting via relay...')
+      // TRACE: Log exact args being sent
+      console.log('[SESSION SIGN] Args:', JSON.stringify(executeArgs, null, 2))
+      addLog(`[TRACE] created_at ts=${createdAtTs} iso=${createdAtIso}`)
+      addLog(`[TRACE] nonce=${nonce} (0x${nonce.toString(16)})`)
+      addLog(`[TRACE] borsh hex: ${Array.from(borshBytes).map(b=>b.toString(16).padStart(2,'0')).join('')}`)
+      addLog(`[TRACE] signature: ${signature}`)
 
       // Step 6: Submit via relay (same endpoint, different method)
       const result = await submitViaRelay(JSON.stringify(executeArgs), accountId, 'w_execute_session')
+
+      console.log('[SESSION SIGN] Result:', result)
+      if (result.error) addLog(`[RELAY ERROR] ${result.error}`)
 
       if (result.status === 'Failure') {
         throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 300)}`)
