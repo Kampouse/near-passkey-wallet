@@ -338,12 +338,13 @@ export async function getEthBlockNumber() {
  * @param {string} argsJson - JSON-encoded args for w_execute_signed: { msg, proof }
  * @returns {{ tx_hash: string, status: string }}
  */
-export async function submitViaRelay(argsJson, walletAccountId) {
+export async function submitViaRelay(argsJson, walletAccountId, method = 'w_execute_signed') {
   const argsBase64 = btoa(argsJson)
   const res = await fetch(`${RELAY_URL}/relay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      method,
       args_base64: argsBase64,
       wallet_account_id: walletAccountId || WALLET_CONTRACT,
     }),

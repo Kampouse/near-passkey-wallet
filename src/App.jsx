@@ -414,6 +414,82 @@ export default function App() {
     setSessionKeys(null)
   }
 
+  // ─── Test Sign with Session Key ──
+  const handleSessionSign = async () => {
+    if (!wallet || !sessionKeys || Object.keys(sessionKeys).length === 0) {
+      addLog('No session keys available')
+      return
+    }
+    setLoading(true)
+    const accountId = wallet.nearAccountId
+    const sessionKeyId = Object.keys(sessionKeys)[0] // Use first session key
+
+    try {
+      // Step 1: Load session key from IndexedDB
+      addLog(`Loading session key ${sessionKeyId}...`)
+      const stored = await loadSessionKey(sessionKeyId, accountId)
+      if (!stored || !stored.privateKey) {
+        throw new Error('Session key not found in storage. Recreate it.')
+      }
+
+      // Step 2: Build empty RequestMessage (same as FaceID test)
+      const nonce = Math.floor(Math.random() * 0xFFFFFFFF)
+      const now = Math.floor(Date.now() / 1000)
+      const createdAtTs = now - 30
+
+      addLog(`Building request for ${accountId}...`)
+
+      // Step 3: Borsh-serialize for challenge
+      const borshBytes = borshRequestMessage({
+        chain_id: 'mainnet',
+        signer_id: accountId,
+        nonce,
+        created_at: createdAtTs,
+        timeout: 300,
+      })
+
+      // Step 4: Sign with ed25519 session key
+      addLog('Signing with session key...')
+      const signature = await signWithSessionKey(stored.privateKey, borshBytes)
+      addLog(`Session signature: ${signature.slice(0, 20)}...`)
+
+      // Step 5: Build args for w_execute_session
+      const createdAtIso = new Date(createdAtTs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+      const executeArgs = {
+        msg: {
+          chain_id: 'mainnet',
+          signer_id: accountId,
+          nonce,
+          created_at: createdAtIso,
+          timeout_secs: 300,
+          request: {
+            ops: [],
+            out: { after: [], then: [] },
+          },
+        },
+        session_key_id: sessionKeyId,
+        signature,
+      }
+
+      addLog('Submitting via relay...')
+
+      // Step 6: Submit via relay (same endpoint, different method)
+      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId, 'w_execute_session')
+
+      if (result.status === 'Failure') {
+        throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 300)}`)
+      }
+
+      addLog(`Session sign SUCCESS! tx: ${result.tx_hash?.slice(0, 20) || 'confirmed'}`)
+      if (result.return_value) addLog(`Return: ${JSON.stringify(result.return_value)}`)
+    } catch (err) {
+      addLog(`Session sign ERROR: ${err.message}`)
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // ─── Session Keys ──
 
   const refreshSessionKeys = async (accountId) => {
@@ -926,6 +1002,16 @@ export default function App() {
           >
             {loading ? <><span className="spinner"></span> Signing...</> : 'Sign with FaceID'}
           </button>
+          {sessionKeys && Object.keys(sessionKeys).length > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleSessionSign}
+              disabled={loading}
+              style={{ marginLeft: 8 }}
+            >
+              {loading ? '...' : 'Sign with Session Key'}
+            </button>
+          )}
         </div>
       </div>
 
