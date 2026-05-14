@@ -448,9 +448,13 @@ export default function App() {
         timeout: 300,
       })
 
-      // Step 4: Sign with ed25519 session key
+      // Step 4: Hash the borsh bytes (contract verifies sha256(borsh(msg)))
+      const hashBuffer = await crypto.subtle.digest('SHA-256', borshBytes)
+      const msgHash = new Uint8Array(hashBuffer)
+
+      // Step 5: Sign the hash with ed25519 session key
       addLog('Signing with session key...')
-      const signature = await signWithSessionKey(stored.privateKey, borshBytes)
+      const signature = await signWithSessionKey(stored.privateKey, msgHash)
       addLog(`Session signature: ${signature.slice(0, 20)}...`)
 
       // Step 5: Build args for w_execute_session
