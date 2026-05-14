@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+target/
+defuse-wallet*.wasm
+defuse-global-deployer.wasm
+wallet.wasm
+.DS_Store
