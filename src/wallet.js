@@ -793,26 +793,24 @@ function readBeInt(data, offset, len) {
  * Returns { publicKey: string (NEAR base58), privateKey: CryptoKey, publicKeyBytes: Uint8Array }
  */
 export async function generateSessionKeyPair() {
-  // Generate extractable first to get raw public key bytes for the contract
-  const extractable = await crypto.subtle.generateKey(
+  // Generate extractable keypair so we can export and store private key
+  const keyPair = await crypto.subtle.generateKey(
     { name: 'Ed25519' },
-    true, // extractable — needed to export public key
+    true, // extractable — needed to export both keys
     ['sign'],
   )
 
-  const publicKeyBuffer = await crypto.subtle.exportKey('raw', extractable.publicKey)
+  const publicKeyBuffer = await crypto.subtle.exportKey('raw', keyPair.publicKey)
   const publicKeyBytes = new Uint8Array(publicKeyBuffer)
   const publicKeyB58 = 'ed25519:' + base58Encode(publicKeyBytes)
 
-  // Re-import private key as non-extractable for secure storage
-  const jwk = await crypto.subtle.exportKey('jwk', extractable.privateKey)
-  const privateKey = await crypto.subtle.importKey(
-    'jwk', jwk, { name: 'Ed25519' }, false, ['sign'], // non-extractable
-  )
+  // Export private key as JWK for storage (can be re-imported later)
+  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
 
   return {
     publicKey: publicKeyB58,
-    privateKey, // non-extractable — can sign, can't be read back
+    privateKey: keyPair.privateKey, // CryptoKey for immediate use
+    privateKeyJwk, // JWK for storage
     publicKeyBytes,
   }
 }
@@ -865,9 +863,8 @@ function openSessionDB() {
 }
 
 /**
- * Save session key to IndexedDB.
- * Private key is a non-extractable CryptoKey — can sign, can't be read out.
- * Metadata (public key, timestamps) stored alongside.
+ * Save a session key to IndexedDB.
+ * Stores the JWK representation of the private key (IndexedDB can't store CryptoKey objects).
  */
 export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
   const db = await openSessionDB()
@@ -877,7 +874,7 @@ export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
     tx.objectStore(IDB_STORE).put({
       sessionKeyId,
       publicKey: keyPair.publicKey,
-      privateKey: keyPair.privateKey, // non-extractable CryptoKey
+      privateKeyJwk: keyPair.privateKeyJwk, // JWK for storage (not CryptoKey)
       accountId,
       createdAt: Date.now(),
     }, storeKey)
@@ -888,7 +885,7 @@ export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
 
 /**
  * Load a session key from IndexedDB.
- * Returns the non-extractable CryptoKey ready for signing.
+ * Re-imports the JWK into a usable CryptoKey.
  */
 export async function loadSessionKey(sessionKeyId, accountId) {
   const db = await openSessionDB()
@@ -896,7 +893,25 @@ export async function loadSessionKey(sessionKeyId, accountId) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readonly')
     const req = tx.objectStore(IDB_STORE).get(storeKey)
-    req.onsuccess = () => resolve(req.result || null)
+    req.onsuccess = async () => {
+      const record = req.result
+      if (!record) {
+        resolve(null)
+        return
+      }
+      // Re-import the JWK into a CryptoKey
+      if (record.privateKeyJwk) {
+        const privateKey = await crypto.subtle.importKey(
+          'jwk',
+          record.privateKeyJwk,
+          { name: 'Ed25519' },
+          false, // non-extractable after import
+          ['sign'],
+        )
+        record.privateKey = privateKey
+      }
+      resolve(record)
+    }
     req.onerror = () => reject(req.error)
   })
 }

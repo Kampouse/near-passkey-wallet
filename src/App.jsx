@@ -447,10 +447,13 @@ export default function App() {
         created_at: createdAtTs,
         timeout: 300,
       })
+      
+      addLog(`Borsh bytes (${borshBytes.length}): ${Array.from(borshBytes.slice(0, 50)).map(b=>b.toString(16).padStart(2,'0')).join('')}...`)
 
       // Step 4: Hash the borsh bytes (contract verifies sha256(borsh(msg)))
       const hashBuffer = await crypto.subtle.digest('SHA-256', borshBytes)
       const msgHash = new Uint8Array(hashBuffer)
+      addLog(`Msg hash: ${Array.from(msgHash).map(b=>b.toString(16).padStart(2,'0')).join('')}`)
 
       // Step 5: Sign the hash with ed25519 session key
       addLog('Signing with session key...')
@@ -564,8 +567,8 @@ export default function App() {
         throw new Error(`CreateSession failed: ${JSON.stringify(result).slice(0, 300)}`)
       }
 
-      // Step 7: Save private key locally
-      await saveSessionKey(sessionKeyId, keyPair, accountId)
+      // Step 7: Save private key locally (as JWK, not CryptoKey)
+      await saveSessionKey(sessionKeyId, { publicKey: keyPair.publicKey, privateKeyJwk: keyPair.privateKeyJwk }, accountId)
       addLog(`Session key "${sessionKeyId}" created! TTL: 30 days`)
 
       // Refresh the list
