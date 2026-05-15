@@ -60,4 +60,10 @@ pub enum Error {
         requested: u32,
         max: u32,
     },
+
+    #[error("backup key already set")]
+    BackupKeyAlreadySet,
+
+    #[error("no backup key set")]
+    NoBackupKeySet,
 }

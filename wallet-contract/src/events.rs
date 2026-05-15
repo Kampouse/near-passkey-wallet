@@ -71,6 +71,22 @@ pub enum WalletEvent<'a> {
         /// Actor of the corresponding request
         by: Actor<'a>,
     },
+
+    /// A backup passkey has been set.
+    #[event_version("1.0.0")]
+    BackupKeySet {
+        /// Public key of the backup passkey
+        public_key: String,
+        /// Actor of the corresponding request
+        by: Actor<'a>,
+    },
+
+    /// The backup passkey has been removed.
+    #[event_version("1.0.0")]
+    BackupKeyRemoved {
+        /// Actor of the corresponding request
+        by: Actor<'a>,
+    },
 }
 
 /// Actor of the request

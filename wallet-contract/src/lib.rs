@@ -86,4 +86,7 @@ pub trait Wallet {
 
     /// Returns a specific session key by ID.
     fn w_session_key(&self, session_key_id: String) -> Option<SessionKey>;
+
+    /// Returns the backup public key if set.
+    fn w_backup_key(&self) -> Option<String>;
 }

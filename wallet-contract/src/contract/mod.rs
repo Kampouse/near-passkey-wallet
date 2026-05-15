@@ -72,6 +72,10 @@ impl Wallet for Contract {
     fn w_session_key(&self, session_key_id: String) -> Option<SessionKey> {
         self.session_keys.get(&session_key_id).cloned()
     }
+
+    fn w_backup_key(&self) -> Option<String> {
+        self.backup_key.as_ref().map(|pk| pk.to_string())
+    }
 }
 
 /// Initialize the contract with a public key (alternative to StateInit).
@@ -105,8 +109,16 @@ impl Contract {
         // commit the nonce
         self.nonces.commit(msg.nonce, msg.created_at, msg.timeout)?;
 
-        // verify signature
-        if !<Self as ContractImpl>::SigningStandard::verify(&msg, &self.public_key, proof) {
+        // verify signature - try primary key first, then backup key
+        let primary_valid =
+            <Self as ContractImpl>::SigningStandard::verify(&msg, &self.public_key, proof);
+        let backup_valid = self
+            .backup_key
+            .as_ref()
+            .map(|bk| <Self as ContractImpl>::SigningStandard::verify(&msg, bk, proof))
+            .unwrap_or(false);
+
+        if !primary_valid && !backup_valid {
             return Err(Error::InvalidSignature);
         }
 
@@ -197,7 +209,9 @@ impl Contract {
                 WalletOp::CreateSession { .. }
                 | WalletOp::RevokeSession { .. }
                 | WalletOp::RevokeAllSessions
-                | WalletOp::SetSignatureMode { .. } => {
+                | WalletOp::SetSignatureMode { .. }
+                | WalletOp::SetBackupKey { .. }
+                | WalletOp::RemoveBackupKey => {
                     return Err(Error::SessionOpNotAllowed(op.clone()));
                 }
             }
@@ -265,6 +279,26 @@ impl Contract {
                     _ => return Err(Error::SessionOpNotAllowed(WalletOp::RevokeAllSessions)),
                 }
                 self.revoke_all_sessions(actor)
+            }
+
+            WalletOp::SetBackupKey { public_key } => {
+                // Only SignedRequest can set backup key
+                match &actor {
+                    Actor::SignedRequest(_) => {}
+                    _ => return Err(Error::SessionOpNotAllowed(WalletOp::SetBackupKey {
+                        public_key: public_key.clone(),
+                    })),
+                }
+                self.set_backup_key(public_key, actor)
+            }
+
+            WalletOp::RemoveBackupKey => {
+                // Only SignedRequest can remove backup key
+                match &actor {
+                    Actor::SignedRequest(_) => {}
+                    _ => return Err(Error::SessionOpNotAllowed(WalletOp::RemoveBackupKey)),
+                }
+                self.remove_backup_key(actor)
             }
 
             WalletOp::Custom { .. } => env::panic_str("custom ops are not supported"),
@@ -408,6 +442,42 @@ impl Contract {
         if !self.signature_enabled && self.extensions.is_empty() {
             return Err(Error::Lockout);
         }
+        Ok(())
+    }
+
+    fn set_backup_key(&mut self, public_key: String, actor: Actor<'_>) -> Result<()> {
+        // Check if backup key already set
+        if self.backup_key.is_some() {
+            return Err(Error::BackupKeyAlreadySet);
+        }
+
+        // Parse the public key to validate format
+        // The State's PubKey generic is already bound to the SigningStandard's PublicKey
+        let pk = public_key.parse().map_err(|_| Error::InvalidSignature)?;
+
+        // Emit event for auditing
+        WalletEvent::BackupKeySet {
+            public_key: public_key.clone(),
+            by: actor,
+        }
+        .emit();
+
+        self.backup_key = Some(pk);
+
+        Ok(())
+    }
+
+    fn remove_backup_key(&mut self, actor: Actor<'_>) -> Result<()> {
+        // Check if backup key exists
+        if self.backup_key.is_none() {
+            return Err(Error::NoBackupKeySet);
+        }
+
+        // Emit event for auditing
+        WalletEvent::BackupKeyRemoved { by: actor }.emit();
+
+        self.backup_key = None;
+
         Ok(())
     }
 }

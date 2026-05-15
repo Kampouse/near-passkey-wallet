@@ -31,6 +31,16 @@ pub enum WalletOp {
     /// Useful for emergency revocation when a session key may be compromised.
     RevokeAllSessions = 5,
 
+    /// Set a backup passkey (e.g., Ledger FIDO authenticator).
+    /// Requires passkey authentication. Only one backup key allowed.
+    SetBackupKey {
+        public_key: String,
+    } = 6,
+
+    /// Remove the backup passkey.
+    /// Requires passkey authentication.
+    RemoveBackupKey = 7,
+
     /// Custom op for third-party implementations.
     Custom {
         #[cfg_attr(

@@ -5,7 +5,7 @@ use std::{
 
 use near_sdk::{
     AccountId, AccountIdRef, GlobalContractId,
-    borsh::{self, BorshSerialize},
+    borsh::{self, BorshSerialize, BorshDeserialize},
     near,
     state_init::{StateInit, StateInitV1},
 };
@@ -64,6 +64,15 @@ pub struct State<PubKey> {
     /// being used by the implementation)
     pub public_key: PubKey,
 
+    /// Backup passkey public key (e.g., Ledger FIDO authenticator).
+    /// Can sign with same authority as primary passkey.
+    /// Only one backup key allowed at a time.
+    #[borsh(
+        serialize_with = "serialize_backup_key",
+        deserialize_with = "deserialize_backup_key",
+    )]
+    pub backup_key: Option<PubKey>,
+
     /// Set of used timeout-based nonces.
     pub nonces: Nonces,
 
@@ -97,6 +106,24 @@ fn deserialize_session_keys<R: near_sdk::borsh::io::Read>(
     }
 }
 
+fn serialize_backup_key<PubKey: BorshSerialize, W: near_sdk::borsh::io::Write>(
+    key: &Option<PubKey>,
+    writer: &mut W,
+) -> near_sdk::borsh::io::Result<()> {
+    near_sdk::borsh::BorshSerialize::serialize(key, writer)
+}
+
+fn deserialize_backup_key<PubKey: BorshDeserialize, R: near_sdk::borsh::io::Read>(
+    reader: &mut R,
+) -> near_sdk::borsh::io::Result<Option<PubKey>> {
+    // Try to deserialize; if it fails (old state without backup_key),
+    // return None instead of erroring
+    match near_sdk::borsh::BorshDeserialize::deserialize_reader(reader) {
+        Ok(key) => Ok(key),
+        Err(_) => Ok(None),
+    }
+}
+
 impl<PubKey> State<PubKey> {
     /// Create a default state with given public key.
     #[inline]
@@ -105,6 +132,7 @@ impl<PubKey> State<PubKey> {
             signature_enabled: true,
             wallet_id: DEFAULT_WALLET_ID,
             public_key,
+            backup_key: None,
             nonces: Nonces::new(DEFAULT_TIMEOUT),
             extensions: BTreeSet::new(),
             session_keys: BTreeMap::new(),
