@@ -376,8 +376,14 @@ export async function deriveSolAddress(nearAccountId, path = 'solana') {
  * Returns { derivedKey, nostrPubkey, npub }
  */
 export async function deriveNostrAddress(accountId) {
-  const result = await viewDerivedPublicKey(accountId, 'nostr,1')
-  // Result: "ed25519:Base58..." for domain 1
+  // Ed25519 is domain 1 (FROST protocol), same as Solana
+  const result = await nearView(MPC_CONTRACT, 'derived_public_key', {
+    path: 'nostr,1',
+    predecessor: accountId,
+    domain_id: 1,  // 1 = Ed25519/FROST
+  })
+  
+  // MPC returns: "ed25519:Base58..." for domain 1
   const publicKey = result
   
   if (!publicKey || !publicKey.startsWith('ed25519:')) {
