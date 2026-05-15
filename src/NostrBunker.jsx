@@ -18,7 +18,7 @@ const NIP46_RELAYS = [
   'wss://relay.damus.io',
 ]
 
-export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading, bunker, onStartBunker, onStopBunker }) {
+export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading, bunker, onStartBunker, onStopBunker, onScanQr }) {
   const [showBunkerQr, setShowBunkerQr] = useState(false)
 
   return (
@@ -49,9 +49,14 @@ export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading, 
             </button>
           )}
           
-          <button className="btn btn-secondary btn-full" onClick={() => setShowBunkerQr(true)}>
-            Show Bunker QR
-          </button>
+          <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onScanQr}>
+              📷 Scan
+            </button>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowBunkerQr(true)}>
+              Show QR
+            </button>
+          </div>
           
           {showBunkerQr && (
             <BunkerQRModal 

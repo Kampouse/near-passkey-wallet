@@ -12,6 +12,7 @@
 import * as nip44 from 'nostr-tools/nip44'
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils'
 import { finalizeEvent } from 'nostr-tools/pure'
+import { SimplePool } from 'nostr-tools/pool'
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -24,6 +25,11 @@ const DEFAULT_RELAYS = [
 
 // ─── NIP-46 Bunker Class ─────────────────────────────────────────────
 
+// Helper: convert Uint8Array to hex string
+function uint8ArrayToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export class Nip46Bunker {
   constructor(options = {}) {
     this.relays = options.relays || DEFAULT_RELAYS
@@ -32,6 +38,20 @@ export class Nip46Bunker {
     this.accountId = options.accountId
     this.signFn = options.signFn // async (messageHash) => signature
     this.onRequest = options.onRequest // (request) => void - show approval UI
+    
+    // Convert Uint8Array to hex string if needed (nostr-tools expects hex)
+    const sk = options.sessionSecretKey
+    
+    // Validate input is Uint8Array
+    if (sk && !(sk instanceof Uint8Array)) {
+      console.error('[NIP-46] sessionSecretKey is NOT Uint8Array, got:', typeof sk, sk?.constructor?.name)
+      throw new Error('sessionSecretKey must be Uint8Array')
+    }
+    
+    this.sessionSecretKey = sk // Keep original for finalizeEvent (must be Uint8Array)
+    this.sessionSecretKeyHex = sk ? uint8ArrayToHex(sk) : null
+    
+    console.log('[NIP-46] Bunker constructed with session key len:', sk?.length, 'hexLen:', this.sessionSecretKeyHex?.length)
     
     this.pool = null
     this.subscription = null
@@ -43,22 +63,30 @@ export class Nip46Bunker {
    * Connect to relays and listen for NIP-46 requests
    */
   async start() {
-    // Import SimplePool dynamically (browser-compatible)
-    const { SimplePool } = await import('nostr-tools/pool')
     this.pool = new SimplePool()
     
     // Subscribe to kind 24133 events tagged with our pubkey
+    // Filter: requests TO us (p-tag = our pubkey, from = someone else)
+    // Skip responses FROM us (pubkey = our pubkey but p-tag = client)
+    // Use moderate lookback (15s) to catch requests that arrive during startup
     const filter = {
       kinds: [KIND_BUNKER_REQUEST],
       '#p': [this.pubkey],
-      since: Math.floor(Date.now() / 1000) - 60, // 60s lookback
+      since: Math.floor(Date.now() / 1000) - 15, // 15s lookback
     }
     
     this.subscription = this.pool.subscribeMany(
       this.relays,
       filter,
       {
-        onevent: (event) => this.handleEvent(event),
+        onevent: (event) => {
+          // Only process incoming requests, skip our own responses
+          if (event.pubkey === this.pubkey) {
+            console.log('[NIP-46] Skipping our own event:', event.id.slice(0, 8))
+            return
+          }
+          this.handleEvent(event)
+        },
         oneose: () => console.log('[NIP-46] Subscription ready'),
       }
     )
@@ -97,21 +125,67 @@ export class Nip46Bunker {
    * Handle incoming NIP-46 request event
    */
   async handleEvent(event) {
-    console.log('[NIP-46] Received event:', event.id.slice(0, 8))
+    console.log('[NIP-46] Received event:', event.id.slice(0, 8), 'from:', event.pubkey.slice(0, 16))
+    
+    let requestId = 'unknown' // Hoisted for error handling
     
     try {
       // Decrypt the request content (NIP-44)
-      const decrypted = await this.decryptRequest(event)
+      console.log('[NIP-46] Decrypting request...')
+      let decrypted
+      try {
+        decrypted = await this.decryptRequest(event)
+      } catch (decryptErr) {
+        console.error('[NIP-46] decryptRequest threw:', decryptErr.message, decryptErr.stack)
+        throw decryptErr
+      }
       if (!decrypted) {
         console.log('[NIP-46] Failed to decrypt request')
         return
       }
       
-      const { method, params, id } = this.parseRequest(decrypted)
-      console.log('[NIP-46] Method:', method, 'params:', params)
+      console.log('[NIP-46] Decrypted:', decrypted.slice(0, 100))
+      
+      let parsed
+      try {
+        parsed = this.parseRequest(decrypted)
+      } catch (parseErr) {
+        console.error('[NIP-46] parseRequest threw:', parseErr.message, parseErr.stack)
+        throw parseErr
+      }
+      
+      const { method, params, id } = parsed
+      requestId = id // Save for error handling
+      console.log('[NIP-46] Method:', method, 'id:', id, 'params:', params)
       
       // Get client pubkey from event
       const clientPubkey = event.pubkey
+      
+      // Auto-approve safe read-only methods
+      const autoApprove = ['get_public_key', 'ping'].includes(method)
+      
+      if (autoApprove) {
+        console.log('[NIP-46] Auto-approving:', method)
+        // Handle immediately without user confirmation
+        try {
+          let result
+          switch (method) {
+            case 'get_public_key':
+              result = this.pubkey
+              break
+            case 'ping':
+              result = 'pong'
+              break
+          }
+          await this.sendResponse(event, id, result)
+          console.log('[NIP-46] Auto-approved response sent for:', method)
+          return
+        } catch (err) {
+          console.error('[NIP-46] Auto-approve error:', err)
+          await this.sendErrorResponse(event, id, err.message)
+          return
+        }
+      }
       
       // Create pending request and wait for approval
       const requestId = `${event.id}-${Date.now()}`
@@ -134,7 +208,7 @@ export class Nip46Bunker {
       const approved = await requestPromise
       
       if (!approved) {
-        await this.sendErrorResponse(event, 'Request denied by user')
+        await this.sendErrorResponse(event, id, 'Request denied by user')
         return
       }
       
@@ -169,7 +243,7 @@ export class Nip46Bunker {
     } catch (err) {
       console.error('[NIP-46] Error handling event:', err)
       // Send error response
-      await this.sendErrorResponse(event, err.message)
+      await this.sendErrorResponse(event, requestId, err.message)
     }
   }
   
@@ -199,13 +273,24 @@ export class Nip46Bunker {
    * Parse decrypted request内容
    */
   parseRequest(content) {
-    // Format: ["method", "pubkey", ...params]
     const parsed = JSON.parse(content)
+    
+    // Handle object format: {"id": "...", "method": "...", "params": [...]}
+    if (parsed.id && parsed.method) {
+      return {
+        id: parsed.id,
+        method: parsed.method,
+        params: Array.isArray(parsed.params) ? parsed.params : [parsed.params],
+        pubkey: parsed[1] || null,
+      }
+    }
+    
+    // Handle array format: ["method", "pubkey", ...params]
     return {
       method: parsed[0],
       pubkey: parsed[1],
       params: parsed.slice(2) || [],
-      id: parsed[1], // Use pubkey as request ID for simplicity
+      id: parsed[1], // Fallback for legacy format
     }
   }
 
@@ -225,18 +310,22 @@ export class Nip46Bunker {
   async handleSignEvent(clientPubkey, params) {
     const eventJson = JSON.parse(params[0])
     
-    // Compute event ID
-    const eventId = await this.computeEventId(eventJson)
+    if (!this.sessionSecretKey) {
+      throw new Error('No session key available for signing')
+    }
     
-    // Sign with MPC via passkey
-    const signature = await this.signFn(eventId)
+    // Build event template for finalizeEvent
+    const eventTemplate = {
+      kind: eventJson.kind,
+      content: eventJson.content || '',
+      created_at: eventJson.created_at || Math.floor(Date.now() / 1000),
+      tags: eventJson.tags || [],
+    }
     
-    // Return signed event
-    eventJson.id = eventId
-    eventJson.sig = signature
-    eventJson.pubkey = this.pubkey
+    // Sign with session key
+    const signedEvent = finalizeEvent(eventTemplate, this.sessionSecretKey)
     
-    return JSON.stringify(eventJson)
+    return JSON.stringify(signedEvent)
   }
 
   /**
@@ -246,12 +335,15 @@ export class Nip46Bunker {
     const targetPubkey = params[0]
     const plaintext = params[1]
     
-    // Get conversation key
-    const sharedKey = await this.getSharedSecret(targetPubkey)
-    const conversationKey = nip44.v2.utils.getConversationKey(this.privKey, targetPubkey)
+    if (!this.sessionSecretKey) {
+      throw new Error('No session key available for encryption')
+    }
+    
+    // Get conversation key using our session secret key hex (getConversationKey expects hex string)
+    const conversationKey = nip44.getConversationKey(this.sessionSecretKeyHex, targetPubkey)
     
     // Encrypt
-    const ciphertext = nip44.v2.encrypt(plaintext, conversationKey)
+    const ciphertext = nip44.encrypt(plaintext, conversationKey)
     return ciphertext
   }
 
@@ -262,11 +354,15 @@ export class Nip46Bunker {
     const senderPubkey = params[0]
     const ciphertext = params[1]
     
-    // Get conversation key
-    const conversationKey = nip44.v2.utils.getConversationKey(this.privKey, senderPubkey)
+    if (!this.sessionSecretKey) {
+      throw new Error('No session key available for decryption')
+    }
+    
+    // Get conversation key using our session secret key hex (getConversationKey expects hex string)
+    const conversationKey = nip44.getConversationKey(this.sessionSecretKeyHex, senderPubkey)
     
     // Decrypt
-    const plaintext = nip44.v2.decrypt(ciphertext, conversationKey)
+    const plaintext = nip44.decrypt(ciphertext, conversationKey)
     return plaintext
   }
 
@@ -304,9 +400,9 @@ export class Nip46Bunker {
   /**
    * Send error response
    */
-  async sendErrorResponse(requestEvent, error) {
+  async sendErrorResponse(requestEvent, id, error) {
     const response = {
-      id: requestEvent.pubkey,
+      id,
       error,
     }
     
@@ -348,17 +444,25 @@ export class Nip46Bunker {
   }
 
   /**
-   * Sign a Nostr event using MPC
+   * Sign a Nostr event using session key
    */
   async signEvent(event) {
-    const eventId = await this.computeEventId(event)
-    const signature = await this.signFn(eventId)
+    if (!this.sessionSecretKey) {
+      throw new Error('No session key available for signing')
+    }
     
-    event.id = eventId
-    event.sig = signature
-    event.pubkey = this.pubkey
+    // Build event template for finalizeEvent
+    const eventTemplate = {
+      kind: event.kind,
+      content: event.content,
+      created_at: event.created_at,
+      tags: event.tags,
+    }
     
-    return event
+    // finalizeEvent adds id, pubkey, and sig
+    const signedEvent = finalizeEvent(eventTemplate, this.sessionSecretKey)
+    
+    return signedEvent
   }
 
   /**
@@ -382,18 +486,48 @@ export class Nip46Bunker {
 
   /**
    * Decrypt incoming request (NIP-44)
-   * Override this to use MPC for decryption
    */
   async decryptRequest(event) {
-    // For MVP, we'll need Ed25519 private key from MPC
-    // This is a placeholder - implement Ed25519 decryption with MPC
+    if (!this.sessionSecretKeyHex) {
+      console.error('[NIP-46] No session key hex - cannot decrypt')
+      return null
+    }
+    
     try {
-      // Note: This requires Ed25519 private key from MPC path 'nostr,1'
-      // For now, return the content as-is for testing
-      console.log('[NIP-46] Would decrypt:', event.content.slice(0, 50))
-      return event.content // Placeholder
+      console.log('[NIP-46] decryptRequest: starting...')
+      const clientPubkey = event.pubkey
+      console.log('[NIP-46] decryptRequest: clientPubkey:', clientPubkey.slice(0, 16))
+      console.log('[NIP-46] decryptRequest: sessionSecretKeyHex len:', this.sessionSecretKeyHex?.length)
+      
+      // Step 1: Get conversation key
+      console.log('[NIP-46] decryptRequest: calling getConversationKey...')
+      console.log('[NIP-46] sessionSecretKeyHex type:', typeof this.sessionSecretKeyHex, 'len:', this.sessionSecretKeyHex?.length)
+      console.log('[NIP-46] clientPubkey type:', typeof clientPubkey, 'len:', clientPubkey?.length)
+      
+      let conversationKey
+      try {
+        conversationKey = nip44.getConversationKey(this.sessionSecretKeyHex, clientPubkey)
+        console.log('[NIP-46] decryptRequest: got conversation key type:', conversationKey?.constructor?.name, 'len:', conversationKey?.length)
+      } catch (e) {
+        console.error('[NIP-46] getConversationKey FAILED:', e.message, e.stack)
+        throw e
+      }
+      
+      // Step 2: Decrypt content
+      console.log('[NIP-46] decryptRequest: calling nip44.decrypt...')
+      console.log('[NIP-46] decryptRequest: event.content length:', event.content?.length)
+      let decrypted
+      try {
+        decrypted = nip44.decrypt(event.content, conversationKey)
+        console.log('[NIP-46] Decrypted request:', decrypted.slice(0, 100))
+      } catch (e) {
+        console.error('[NIP-46] nip44.decrypt FAILED:', e.message, e.stack)
+        throw e
+      }
+      
+      return decrypted
     } catch (err) {
-      console.error('[NIP-46] Decrypt error:', err)
+      console.error('[NIP-46] Decrypt error:', err.message, err.stack)
       return null
     }
   }
@@ -402,10 +536,20 @@ export class Nip46Bunker {
    * Encrypt outgoing response (NIP-44)
    */
   async encryptResponse(targetPubkey, content) {
-    // For MVP, return content as-is
-    // Implement Ed25519 encryption with MPC
-    console.log('[NIP-46] Would encrypt to:', targetPubkey.slice(0, 16))
-    return content
+    if (!this.sessionSecretKeyHex) {
+      console.error('[NIP-46] No session key hex - cannot encrypt')
+      return content
+    }
+    
+    try {
+      const conversationKey = nip44.getConversationKey(this.sessionSecretKeyHex, targetPubkey)
+      const encrypted = nip44.encrypt(content, conversationKey)
+      console.log('[NIP-46] Encrypted response for:', targetPubkey.slice(0, 16))
+      return encrypted
+    } catch (err) {
+      console.error('[NIP-46] Encrypt error:', err)
+      return content
+    }
   }
 
   /**

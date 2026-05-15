@@ -80,6 +80,7 @@ export default function App() {
   const [nostrConnectRequest, setNostrConnectRequest] = useState(null) // pending nostrconnect pairing request
   const [nostrSignRequest, setNostrSignRequest] = useState(null) // pending sign request from connected app
   const [bunker, setBunker] = useState(null) // NIP-46 bunker instance
+  const [nostrRelays, setNostrRelays] = useState(null) // relays from nostrconnect
   const [loading, setLoading] = useState(false)
 
   // Name form
@@ -729,6 +730,20 @@ export default function App() {
           const { pubkeyToNpub } = await import('./nostr.js')
           setNpub(pubkeyToNpub(pubkey))
         }
+        
+        // Auto-start bunker if not running
+        if (!bunker) {
+          try {
+            addLog('Auto-starting bunker...')
+            // Use relays from nostrconnect request
+            const relays = nostrConnectRequest.relays || ['wss://relay.primal.net', 'wss://nos.lol']
+            setNostrRelays(relays)
+            await startBunker(relays)
+          } catch (err) {
+            addLog(`ERROR starting bunker: ${err.message}`)
+            console.error('Bunker start error:', err)
+          }
+        }
       } else {
         addLog('✗ Failed to publish to relays')
       }
@@ -748,43 +763,46 @@ export default function App() {
   }
   
   // ─── NIP-46 Bunker Management ──
-  const startBunker = async () => {
+  const startBunker = async (relays) => {
     if (bunker) {
       addLog('Bunker already running')
       return
     }
     
-    // Need a session key for signing
-    const { secretKey, pubkey } = getOrCreateSessionKeypair()
-    
-    if (!npub) {
-      setNostrPubkey(pubkey)
-      setNpub(pubkeyToNpub(pubkey))
-    }
-    
-    addLog('Starting NIP-46 bunker...')
-    
-    const newBunker = new Nip46Bunker({
-      relays: ['wss://relay.primal.net', 'wss://nos.lol'],
-      pubkey: pubkey,
-      npub: pubkeyToNpub(pubkey),
-      onRequest: (request) => {
-        // Show approval modal
-        setNostrSignRequest(request)
-      },
-      signFn: async (messageHash) => {
-        // For now, use the session key to sign
-        // TODO: Use MPC Ed25519 signing (path: 'nostr,1')
-        const { finalizeEvent } = await import('nostr-tools/pure')
-        // The signFn for NIP-46 should return hex signature
-        // For Ed25519, we'd need MPC call here
-        throw new Error('MPC signing not yet implemented for Nostr')
+    try {
+      // Use provided relays or defaults
+      const bunkerRelays = relays || ['wss://relay.primal.net', 'wss://nos.lol']
+      
+      // Need a session key for signing
+      const { secretKey, pubkey } = getOrCreateSessionKeypair()
+      
+      if (!npub) {
+        setNostrPubkey(pubkey)
+        setNpub(pubkeyToNpub(pubkey))
       }
-    })
-    
-    await newBunker.start()
-    setBunker(newBunker)
-    addLog(`✓ Bunker listening on relays`)
+      
+      addLog('Starting NIP-46 bunker...')
+      addLog(`Relays: ${bunkerRelays.join(', ')}`)
+      
+      const newBunker = new Nip46Bunker({
+        relays: bunkerRelays,
+        pubkey: pubkey,
+        npub: pubkeyToNpub(pubkey),
+        sessionSecretKey: secretKey,
+        onRequest: (request) => {
+          // Show approval modal
+          setNostrSignRequest(request)
+        }
+      })
+      
+      await newBunker.start()
+      setBunker(newBunker)
+      addLog(`✓ Bunker listening on relays`)
+    } catch (err) {
+      addLog(`ERROR in startBunker: ${err.message}`)
+      console.error('startBunker error:', err)
+      throw err
+    }
   }
   
   const stopBunker = () => {
@@ -2459,6 +2477,7 @@ export default function App() {
           bunker={bunker}
           onStartBunker={startBunker}
           onStopBunker={stopBunker}
+          onScanQr={() => setShowQrScanner(true)}
         />
 
         <div className="card">

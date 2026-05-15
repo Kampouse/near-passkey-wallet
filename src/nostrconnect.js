@@ -10,7 +10,7 @@
 
 import * as nip44 from 'nostr-tools/nip44'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
-import { SimplePool } from 'nostr-tools'
+import { SimplePool } from 'nostr-tools/pool'
 
 const KIND_BUNKER = 24133
 const NOSTR_SESSION_KEY = 'nostr_session_key'
@@ -86,6 +86,11 @@ export function getOrCreateSessionKeypair() {
   return { secretKey: sk, pubkey }
 }
 
+// Helper: convert Uint8Array to hex string
+function uint8ArrayToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 /**
  * Handle nostrconnect pairing request
  * Sends an encrypted ACK response to relay
@@ -96,9 +101,25 @@ export function getOrCreateSessionKeypair() {
 export async function handleNostrConnectRequest(params) {
   const { clientPubkey, relays, secret, ourSecretKey, ourPubkey } = params
   
+  // Validate ourSecretKey is Uint8Array
+  if (!(ourSecretKey instanceof Uint8Array)) {
+    console.error('[NostrConnect] ourSecretKey is NOT Uint8Array, got:', typeof ourSecretKey, ourSecretKey?.constructor?.name)
+    throw new Error('ourSecretKey must be Uint8Array')
+  }
+  
+  // Convert to hex string for getConversationKey (accepts hex)
+  const secretKeyHex = uint8ArrayToHex(ourSecretKey)
+  
   console.log('[NostrConnect] Handling pairing request from:', clientPubkey.slice(0, 16))
   console.log('[NostrConnect] Our pubkey:', ourPubkey.slice(0, 16))
   console.log('[NostrConnect] Relays:', relays)
+  console.log('[NostrConnect] Passed ourSecretKey type:', ourSecretKey?.constructor?.name, 'len:', ourSecretKey?.length)
+  console.log('[NostrConnect] Converted secretKeyHex type:', typeof secretKeyHex, 'len:', secretKeyHex?.length)
+  
+  // Validate clientPubkey is hex string
+  if (typeof clientPubkey !== 'string' || clientPubkey.length !== 64) {
+    throw new Error(`clientPubkey must be 64-char hex string, got: ${typeof clientPubkey} len=${clientPubkey?.length}`)
+  }
   
   // Build response content (NIP-46 connect response)
   const response = {
@@ -112,8 +133,37 @@ export async function handleNostrConnectRequest(params) {
   try {
     // Encrypt response with NIP-44
     console.log('[NostrConnect] Encrypting response...')
-    const conversationKey = nip44.v2.getConversationKey(ourSecretKey, clientPubkey)
-    const encryptedContent = await nip44.v2.encrypt(JSON.stringify(response), conversationKey)
+    
+    // TRACE: Type check immediately before nostr-tools calls
+    console.log('[NostrConnect] TRACE: About to call nip44.getConversationKey')
+    console.log('[NostrConnect] TRACE: secretKeyHex is string?', typeof secretKeyHex === 'string', 'value:', secretKeyHex?.slice(0, 16))
+    console.log('[NostrConnect] TRACE: clientPubkey is string?', typeof clientPubkey === 'string', 'value:', clientPubkey?.slice(0, 16))
+    
+    let conversationKey
+    try {
+      conversationKey = nip44.getConversationKey(secretKeyHex, clientPubkey)
+      console.log('[NostrConnect] conversationKey type:', conversationKey?.constructor?.name, 'len:', conversationKey?.length)
+    } catch (e) {
+      console.error('[NostrConnect] getConversationKey error:', e.message, e.stack)
+      throw e
+    }
+    
+    // TRACE: Type check before encrypt
+    console.log('[NostrConnect] TRACE: About to call nip44.encrypt')
+    console.log('[NostrConnect] TRACE: conversationKey is Uint8Array?', conversationKey instanceof Uint8Array, 'len:', conversationKey?.length)
+    
+    let encryptedContent
+    try {
+      encryptedContent = nip44.encrypt(JSON.stringify(response), conversationKey)
+      console.log('[NostrConnect] encrypted content len:', encryptedContent?.length)
+    } catch (e) {
+      console.error('[NostrConnect] encrypt error:', e.message, e.stack)
+      throw e
+    }
+    
+    // TRACE: Type check before finalizeEvent
+    console.log('[NostrConnect] TRACE: About to call finalizeEvent')
+    console.log('[NostrConnect] TRACE: ourSecretKey is Uint8Array?', ourSecretKey instanceof Uint8Array, 'len:', ourSecretKey?.length)
     
     // Build kind 24133 event
     const eventTemplate = {
@@ -124,9 +174,17 @@ export async function handleNostrConnectRequest(params) {
       pubkey: ourPubkey,
     }
     
-    // Sign event
+    // Sign event - finalizeEvent requires Uint8Array for private key
     console.log('[NostrConnect] Signing event...')
-    const signedEvent = finalizeEvent(eventTemplate, ourSecretKey)
+    console.log('[NostrConnect] ourSecretKey type:', typeof ourSecretKey, 'isArray:', Array.isArray(ourSecretKey), 'isUint8Array:', ourSecretKey instanceof Uint8Array)
+    
+    let signedEvent
+    try {
+      signedEvent = finalizeEvent(eventTemplate, ourSecretKey)
+    } catch (e) {
+      console.error('[NostrConnect] finalizeEvent error:', e.message, e.stack)
+      throw e
+    }  // Needs Uint8Array, not hex string
     
     console.log('[NostrConnect] Event ID:', signedEvent.id)
     console.log('[NostrConnect] Publishing to', relays.length, 'relays...')
