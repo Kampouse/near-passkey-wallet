@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
 import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
 import { NostrBunkerCard } from './NostrBunker.jsx'
+import { parseNostrConnectUri } from './nostrconnect.js'
 import {
   createPasskey,
   signWithPasskey,
@@ -74,6 +75,7 @@ export default function App() {
   const [solAddress, setSolAddress] = useState(null)
   const [nostrPubkey, setNostrPubkey] = useState(null) // hex pubkey
   const [npub, setNpub] = useState(null) // bech32 npub
+  const [nostrConnectRequest, setNostrConnectRequest] = useState(null) // pending nostrconnect pairing request
   const [loading, setLoading] = useState(false)
 
   // Name form
@@ -664,6 +666,61 @@ export default function App() {
     }
   }
 
+  // ─── NostrConnect Pairing Handler ──
+  const handleNostrConnect = (uri) => {
+    const parsed = parseNostrConnectUri(uri)
+    if (!parsed) {
+      addLog('✗ Failed to parse nostrconnect URI')
+      return
+    }
+    
+    addLog(`NostrConnect request from: ${parsed.metadata?.name || 'Unknown App'}`)
+    addLog(`  Permissions: ${parsed.perms?.join(', ') || 'none'}`)
+    addLog(`  Relays: ${parsed.relays?.join(', ')}`)
+    
+    // Show approval modal
+    setNostrConnectRequest({
+      ...parsed,
+      uri
+    })
+    setShowQrScanner(false)
+  }
+  
+  const handleNostrConnectApprove = async () => {
+    if (!nostrConnectRequest) return
+    if (!nostrPubkey) {
+      addLog('ERROR: No Nostr key derived - click "Derive Nostr Key" first')
+      setNostrConnectRequest(null)
+      return
+    }
+    
+    setLoading(true)
+    addLog('Approving NostrConnect pairing...')
+    
+    try {
+      // For nostrconnect, we need to send an encrypted response to the relay
+      // This requires Ed25519 signing which uses MPC path 'nostr,1'
+      // TODO: Implement actual signing flow
+      
+      // Placeholder: show that we would approve
+      addLog(`✓ Would approve pairing with ${nostrConnectRequest.metadata?.name || nostrConnectRequest.clientPubkey.slice(0,16)}...`)
+      addLog('  (Full signing flow requires Ed25519 MPC integration)')
+      
+      // For now, just close the modal
+      setNostrConnectRequest(null)
+    } catch (err) {
+      addLog(`ERROR: ${err.message}`)
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+  
+  const handleNostrConnectDeny = () => {
+    setNostrConnectRequest(null)
+    addLog('NostrConnect pairing denied')
+  }
+
   const handleLogout = () => {
     clearWalletState()
     setWallet(null)
@@ -680,6 +737,13 @@ export default function App() {
     if (!data || !data[0]?.rawValue) return
     const uri = data[0].rawValue
     addLog(`Scanned: ${uri}`)
+    
+    // Check for nostrconnect:// URI (NIP-46 pairing)
+    if (uri.startsWith('nostrconnect://')) {
+      addLog('Detected nostrconnect:// URI - Nostr pairing request')
+      handleNostrConnect(uri)
+      return
+    }
     
     // Check for passkey://pay URI (POS payment)
     if (isPasskeyQr(uri)) {
@@ -1983,8 +2047,90 @@ export default function App() {
                 styles={{ container: { width: '100%', maxWidth: 400 } }}
               />
               <p style={{ marginTop: 16, fontSize: 13, color: '#888', textAlign: 'center' }}>
-                Point camera at a <code>passkey://</code> QR code
+                Point camera at a <code>passkey://</code> or <code>nostrconnect://</code> QR
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NostrConnect Approval Modal */}
+      {nostrConnectRequest && (
+        <div className="modal-overlay">
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>🔐 Nostr Connect Request</h3>
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#888' }}>App</div>
+                <div style={{ fontWeight: 600, fontSize: 16 }}>
+                  {nostrConnectRequest.metadata?.name || 'Unknown App'}
+                </div>
+                {nostrConnectRequest.metadata?.url && (
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                    {nostrConnectRequest.metadata.url}
+                  </div>
+                )}
+              </div>
+              
+              {nostrConnectRequest.perms?.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: '#888' }}>Permissions</div>
+                  <div style={{ fontSize: 13, marginTop: 4 }}>
+                    {nostrConnectRequest.perms.map(p => (
+                      <span key={p} style={{
+                        background: '#2a2a35',
+                        padding: '4px 8px',
+                        borderRadius: 4,
+                        marginRight: 4,
+                        fontSize: 11
+                      }}>{p}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#888' }}>Your Nostr Key</div>
+                <div style={{ fontSize: 13, fontFamily: 'monospace', marginTop: 4 }}>
+                  {npub ? `${npub.slice(0, 20)}...${npub.slice(-8)}` : (
+                    <span style={{ color: '#f87171' }}>Not derived - click "Derive Nostr Key" first</span>
+                  )}
+                </div>
+              </div>
+              
+              {!npub && (
+                <div style={{ 
+                  background: 'rgba(248,113,113,0.1)', 
+                  border: '1px solid #f87171',
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 16,
+                  fontSize: 13
+                }}>
+                  ⚠️ You need to derive a Nostr key before approving.
+                </div>
+              )}
+              
+              <div className="row" style={{ marginTop: 24 }}>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleNostrConnectDeny}
+                  style={{ flex: 1 }}
+                  disabled={loading}
+                >
+                  Deny
+                </button>
+                <button 
+                  className="btn btn-primary" 
+                  onClick={handleNostrConnectApprove}
+                  style={{ flex: 1 }}
+                  disabled={loading || !npub}
+                >
+                  {loading ? 'Approving...' : 'Approve'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
