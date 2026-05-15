@@ -1513,116 +1513,110 @@ export default function App() {
         <div className="chains">
           <span className="chain-badge active">Ethereum</span>
           <span className="chain-badge">Bitcoin</span>
-          <span className="chain-badge">Solana</span>
+          <span className="chain-badge active">Solana</span>
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-title">Balance</div>
-        <div className="balance">
-          {ethBalance !== null ? formatEthBalance(ethBalance) : '...'} ETH
-        </div>
-        <div className="balance-label">
-          {ethBalance ? `$${(Number(ethBalance) / 1e18 * 2500).toFixed(2)}` : '—'}
-        </div>
-        <div className="row">
+      <div className="dashboard-grid">
+        <div className="card">
+          <div className="card-title">ETH Balance</div>
+          <div className="balance">
+            {ethBalance !== null ? formatEthBalance(ethBalance) : '...'} ETH
+          </div>
+          <div className="balance-label">
+            {ethBalance ? `$${(Number(ethBalance) / 1e18 * 2500).toFixed(2)}` : '—'}
+          </div>
           <button className="btn btn-secondary" onClick={() => refreshBalance()}>
             Refresh
           </button>
         </div>
-      </div>
 
-      <div className="card">
-        <div className="card-title">Solana Balance</div>
-        {solAddress ? (
-          <>
-            <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
-              {solAddress.slice(0, 8)}...{solAddress.slice(-8)}
+        <div className="card">
+          <div className="card-title">SOL Balance</div>
+          {solAddress ? (
+            <>
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                {solAddress.slice(0, 8)}...{solAddress.slice(-8)}
+              </div>
+              <div className="balance">
+                {solBalance !== null ? (Number(solBalance) / 1e9).toFixed(4) : '...'} SOL
+              </div>
+              <div className="balance-label">
+                {solBalance ? `$${(Number(solBalance) / 1e9 * 150).toFixed(2)}` : '—'}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+              Click below to derive address
             </div>
-            <div className="balance">
-              {solBalance !== null ? (Number(solBalance) / 1e9).toFixed(4) : '...'} SOL
-            </div>
-            <div className="balance-label">
-              {solBalance ? `$${(Number(solBalance) / 1e9 * 150).toFixed(2)}` : '—'}
-            </div>
-          </>
-        ) : (
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-            Click "Load SOL" to derive address
-          </div>
-        )}
-        <div className="row">
+          )}
           <button className="btn btn-secondary" onClick={() => refreshSolBalance()}>
             {solBalance ? 'Refresh' : 'Load SOL'}
           </button>
         </div>
-      </div>
 
-      <div className="card">
-        <div className="card-title">Send ETH</div>
-        <input
-          className="input"
-          placeholder="Recipient (0x...)"
-          value={sendTo}
-          onChange={e => setSendTo(e.target.value)}
-          style={{ marginBottom: 8 }}
-        />
-        <input
-          className="input"
-          placeholder="Amount (ETH)"
-          value={sendAmount}
-          onChange={e => setSendAmount(e.target.value)}
-          type="number"
-          step="0.0001"
-        />
-        <div className="row">
+        <div className="card">
+          <div className="card-title">Send ETH</div>
+          <input
+            className="input"
+            placeholder="Recipient (0x...)"
+            value={sendTo}
+            onChange={e => setSendTo(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+          <input
+            className="input"
+            placeholder="Amount (ETH)"
+            value={sendAmount}
+            onChange={e => setSendAmount(e.target.value)}
+            type="number"
+            step="0.0001"
+          />
           <button
             className="btn btn-primary"
             onClick={handleSend}
             disabled={loading || !sendTo || !sendAmount}
+            style={{ marginTop: 12 }}
           >
             {loading ? <><span className="spinner"></span> Signing...</> : 'Send with FaceID'}
           </button>
         </div>
-      </div>
 
-      <div className="card">
-        <div className="card-title">Send SOL</div>
-        <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
-          {solAddress ? `From: ${solAddress.slice(0, 8)}...${solAddress.slice(-8)}` : 'Load SOL address first'}
-        </div>
-        <input
-          className="input"
-          placeholder="Recipient (Solana address)"
-          value={solSendTo}
-          onChange={e => setSolSendTo(e.target.value)}
-          style={{ marginBottom: 8 }}
-        />
-        <input
-          className="input"
-          placeholder="Amount (SOL)"
-          value={solSendAmount}
-          onChange={e => setSolSendAmount(e.target.value)}
-          type="number"
-          step="0.001"
-        />
-        <div className="row">
+        <div className="card">
+          <div className="card-title">Send SOL</div>
+          <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+            {solAddress ? `${solAddress.slice(0, 8)}...${solAddress.slice(-8)}` : 'Load SOL first'}
+          </div>
+          <input
+            className="input"
+            placeholder="Recipient (Solana address)"
+            value={solSendTo}
+            onChange={e => setSolSendTo(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+          <input
+            className="input"
+            placeholder="Amount (SOL)"
+            value={solSendAmount}
+            onChange={e => setSolSendAmount(e.target.value)}
+            type="number"
+            step="0.001"
+          />
           <button
             className="btn btn-primary"
             onClick={handleSendSol}
             disabled={loading || !solSendTo || !solSendAmount || !solAddress}
+            style={{ marginTop: 12 }}
           >
             {loading ? <><span className="spinner"></span> Signing...</> : 'Send SOL'}
           </button>
         </div>
-      </div>
 
-      <div className="card">
-        <div className="card-title">Sign Test Transaction</div>
-        <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
-          Test passkey signing with the wallet contract
-        </div>
-        <div className="row">
+        <div className="card">
+          <div className="card-title">Test Signing</div>
+          <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
+            Test passkey signing with the wallet contract
+          </div>
           <button
             className="btn btn-primary"
             onClick={handleTestSign}
@@ -1635,58 +1629,46 @@ export default function App() {
               className="btn btn-secondary"
               onClick={handleSessionSign}
               disabled={loading}
-              style={{ marginLeft: 8 }}
+              style={{ marginTop: 8 }}
             >
               {loading ? '...' : 'Sign with Session Key'}
             </button>
           )}
         </div>
-      </div>
 
-      <div className="card">
-        <div className="card-title">Wallet Info</div>
-        <div style={{ fontSize: 12, color: '#555', lineHeight: 1.8 }}>
-          <div>Account: {wallet?.nearAccountId}</div>
-          <div>Passkey: {wallet?.credentialId?.slice(0, 20)}...</div>
-          <div>Path: {wallet?.path}</div>
-          <div>MPC: {MPC_CONTRACT}</div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">Backup Passkey</div>
-        <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
-          Hardware backup (Ledger, YubiKey) for recovery. Requires primary passkey to add/remove.
-        </div>
-        {backupKey ? (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: '#eee' }}>
-              <span style={{ color: '#22c55e' }}>✓ Backup registered</span>
-            </div>
-            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
-              {backupKey.slice(0, 40)}...
-            </div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <button
-                className="btn btn-secondary"
-                onClick={handleTestBackupKey}
-                disabled={backupLoading}
-                style={{ flex: 1, fontSize: 12 }}
-              >
-                {backupLoading ? '...' : 'Test Backup'}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={handleRemoveBackupKey}
-                disabled={backupLoading}
-                style={{ flex: 1, fontSize: 12, marginLeft: 8 }}
-              >
-                {backupLoading ? '...' : 'Remove'}
-              </button>
-            </div>
+        <div className="card">
+          <div className="card-title">Backup Passkey</div>
+          <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
+            Hardware backup (Ledger, YubiKey) for recovery.
           </div>
-        ) : (
-          <div>
+          {backupKey ? (
+            <div>
+              <div style={{ fontSize: 12, color: '#eee' }}>
+                <span style={{ color: '#22c55e' }}>✓ Backup registered</span>
+              </div>
+              <div style={{ fontSize: 11, color: '#888', marginTop: 4, marginBottom: 8 }}>
+                {backupKey.slice(0, 40)}...
+              </div>
+              <div className="row">
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleTestBackupKey}
+                  disabled={backupLoading}
+                  style={{ flex: 1, fontSize: 12 }}
+                >
+                  {backupLoading ? '...' : 'Test'}
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={handleRemoveBackupKey}
+                  disabled={backupLoading}
+                  style={{ flex: 1, fontSize: 12, marginLeft: 8 }}
+                >
+                  {backupLoading ? '...' : 'Remove'}
+                </button>
+              </div>
+            </div>
+          ) : (
             <button
               className="btn btn-primary"
               onClick={handleAddBackupKey}
@@ -1694,143 +1676,91 @@ export default function App() {
             >
               {backupLoading ? '...' : 'Add Backup Passkey'}
             </button>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-title">Session Keys</div>
-        <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
-          Ed25519 keys that skip FaceID for faster signing. Require FaceID to create/revoke.
+          )}
         </div>
-        {sessionKeys && Object.keys(sessionKeys).length > 0 ? (
-          <div style={{ marginBottom: 12 }}>
-            {Object.entries(sessionKeys).map(([id, key]) => {
-              const expiresAt = Number(key.expires_at) / 1e6 // ns → ms
-              const isExpired = Date.now() > expiresAt
-              const expiresLabel = isExpired
-                ? 'Expired'
-                : `Expires ${new Date(expiresAt).toLocaleDateString()}`
-              return (
-                <div key={id} style={{ padding: '8px 0', borderBottom: '1px solid #222', fontSize: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <div style={{ color: isExpired ? '#888' : '#eee', fontWeight: 500 }}>{id}</div>
-                      <div style={{ color: isExpired ? '#666' : '#888', marginTop: 2 }}>
-                        {key.public_key?.slice(0, 30)}...
-                        {' · '}
-                        <span style={{ color: isExpired ? '#ef4444' : '#22c55e' }}>{expiresLabel}</span>
+
+        <div className="card">
+          <div className="card-title">Session Keys</div>
+          <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
+            Ed25519 keys that skip FaceID for faster signing.
+          </div>
+          {sessionKeys && Object.keys(sessionKeys).length > 0 ? (
+            <div style={{ marginBottom: 12 }}>
+              {Object.entries(sessionKeys).map(([id, key]) => {
+                const expiresAt = Number(key.expires_at) / 1e6
+                const isExpired = Date.now() > expiresAt
+                const expiresLabel = isExpired
+                  ? 'Expired'
+                  : `Expires ${new Date(expiresAt).toLocaleDateString()}`
+                return (
+                  <div key={id} style={{ padding: '8px 0', borderBottom: '1px solid #222', fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ color: isExpired ? '#888' : '#eee', fontWeight: 500 }}>{id}</div>
+                        <div style={{ color: isExpired ? '#666' : '#888', marginTop: 2 }}>
+                          {key.public_key?.slice(0, 30)}...
+                          {' · '}
+                          <span style={{ color: isExpired ? '#ef4444' : '#22c55e' }}>{expiresLabel}</span>
+                        </div>
                       </div>
+                      <button
+                        className="btn btn-danger"
+                        style={{ fontSize: 11, padding: '4px 10px' }}
+                        onClick={() => handleRevokeSession(id)}
+                        disabled={sessionLoading}
+                      >
+                        Revoke
+                      </button>
                     </div>
-                    <button
-                      className="btn btn-danger"
-                      style={{ fontSize: 11, padding: '4px 10px' }}
-                      onClick={() => handleRevokeSession(id)}
-                      disabled={sessionLoading}
-                    >
-                      Revoke
-                    </button>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+          ) : sessionKeys ? (
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>No session keys</div>
+          ) : null}
+          <div className="row">
+            <button
+              className="btn btn-secondary"
+              onClick={() => refreshSessionKeys()}
+              disabled={sessionLoading}
+              style={{ flex: 1 }}
+            >
+              {sessionKeys ? 'Refresh' : 'Load'}
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleCreateSession}
+              disabled={sessionLoading}
+              style={{ flex: 1 }}
+            >
+              {sessionLoading ? '...' : 'Create'}
+            </button>
           </div>
-        ) : sessionKeys ? (
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>No session keys</div>
-        ) : null}
-        <div className="row">
-          <button
-            className="btn btn-secondary"
-            onClick={() => refreshSessionKeys()}
-            disabled={sessionLoading}
-            style={{ flex: 1 }}
-          >
-            {sessionKeys ? 'Refresh' : 'Load Keys'}
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={handleCreateSession}
-            disabled={sessionLoading}
-            style={{ flex: 1 }}
-          >
-            {sessionLoading ? '...' : 'Create Session Key'}
-          </button>
+          {sessionKeys && Object.keys(sessionKeys).length > 0 && (
+            <button
+              className="btn btn-danger"
+              onClick={handleRevokeAllSessions}
+              disabled={sessionLoading}
+              style={{ width: '100%', marginTop: 8 }}
+            >
+              Revoke All (Emergency)
+            </button>
+          )}
         </div>
-        {sessionKeys && Object.keys(sessionKeys).length > 0 && (
-          <button
-            className="btn btn-danger"
-            onClick={handleRevokeAllSessions}
-            disabled={sessionLoading}
-            style={{ width: '100%', marginTop: 8 }}
-          >
-            Revoke All Sessions (Emergency)
-          </button>
-        )}
-        
-        {/* Debug: Show local IndexedDB keys */}
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #333' }}>
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: 11, padding: '4px 10px' }}
-            onClick={async () => {
-              try {
-                const IDB_NAME = 'passkey-wallet'
-                const IDB_STORE = 'session-keys'
-                const IDB_VERSION = 2
-                addLog('Opening IndexedDB...')
-                const db = await new Promise((resolve, reject) => {
-                  const req = indexedDB.open(IDB_NAME, IDB_VERSION)
-                  req.onupgradeneeded = () => {
-                    const db = req.result
-                    if (!db.objectStoreNames.contains(IDB_STORE)) {
-                      db.createObjectStore(IDB_STORE)
-                    }
-                  }
-                  req.onsuccess = () => resolve(req.result)
-                  req.onerror = () => reject(req.error)
-                })
-                addLog(`DB opened, object stores: ${Array.from(db.objectStoreNames).join(', ') || '(none)'}`)
-                if (!db.objectStoreNames.contains(IDB_STORE)) {
-                  addLog('ERROR: session-keys store not found')
-                  return
-                }
-                const tx = db.transaction(IDB_STORE, 'readonly')
-                const store = tx.objectStore(IDB_STORE)
-                const all = await new Promise((resolve, reject) => {
-                  const req = store.getAll()
-                  req.onsuccess = () => resolve(req.result)
-                  req.onerror = () => reject(req.error)
-                })
-                addLog('=== IndexedDB Session Keys ===')
-                if (all.length === 0) {
-                  addLog('  (none stored)')
-                } else {
-                  all.forEach(k => {
-                    addLog(`  key: "${k.sessionKeyId}"`)
-                    addLog(`  accountId: "${k.accountId}"`)
-                    addLog(`  publicKey: "${k.publicKey}"`)
-                  })
-                }
-                addLog('=== Contract Session Keys ===')
-                if (sessionKeys && Object.keys(sessionKeys).length > 0) {
-                  Object.entries(sessionKeys).forEach(([id, k]) => {
-                    addLog(`  ${id}: ${k.public_key}`)
-                  })
-                } else {
-                  addLog('  (none loaded)')
-                }
-              } catch (err) {
-                addLog(`ERROR: ${err.message}`)
-                console.error(err)
-              }
-            }}
-          >
-            Debug: Compare Keys
-          </button>
+
+        <div className="card">
+          <div className="card-title">Wallet Info</div>
+          <div style={{ fontSize: 12, color: '#555', lineHeight: 1.8 }}>
+            <div>Account: {wallet?.nearAccountId}</div>
+            <div>Passkey: {wallet?.credentialId?.slice(0, 20)}...</div>
+            <div>Path: {wallet?.path}</div>
+            <div>MPC: {MPC_CONTRACT}</div>
+          </div>
         </div>
       </div>
 
-      <button className="btn btn-danger" onClick={handleLogout}>
+      <button className="btn btn-danger" onClick={handleLogout} style={{ marginTop: 16 }}>
         Logout
       </button>
 

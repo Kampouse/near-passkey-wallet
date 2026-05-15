@@ -11,13 +11,15 @@
       background: #0a0a0a;
       color: #e5e5e5;
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
       padding: 20px;
     }
+    #root {
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
     .container {
-      max-width: 420px;
+      max-width: 1200px;
       width: 100%;
     }
     h1 {
@@ -33,12 +35,21 @@
       font-size: 14px;
       margin-bottom: 40px;
     }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
     .card {
       background: #141414;
       border: 1px solid #222;
       border-radius: 16px;
       padding: 24px;
-      margin-bottom: 16px;
+      margin-bottom: 0;
+    }
+    .card-full {
+      grid-column: 1 / -1;
     }
     .card-title {
       font-size: 12px;
@@ -148,7 +159,21 @@
       border-color: #00c2ff;
       color: #00c2ff;
     }
-    #root { width: 100%; }
+    
+    /* Mobile: single column */
+    @media (max-width: 768px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .container {
+        max-width: 420px;
+      }
+    }
   </style>
 </head>
 <body>
