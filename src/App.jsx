@@ -873,6 +873,11 @@ export default function App() {
       addLog('Submitting SetBackupKey transaction...')
       await nearCall(accountId, 'w_execute_signed', args)
 
+      // Step 5: Save credential mapping for login recovery
+      const backupCredentialRawId = new Uint8Array(credential.rawId)
+      saveCredentialMapping(credential.id, accountId, uint8ToBase64(backupCredentialRawId))
+      addLog('Saved credential mapping for backup passkey')
+
       addLog('Backup passkey registered successfully!')
       setBackupKey(nearPublicKey)
 
