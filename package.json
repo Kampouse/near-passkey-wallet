@@ -2,15 +2,20 @@
   "name": "near-passkey-wallet",
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:sdk && vite build",
+    "build:sdk": "npm run build -w @passkey/sdk",
     "preview": "vite preview",
     "deploy": "./scripts/deploy.sh",
     "deploy:frontend": "npm run build && npx wrangler pages deploy dist --project-name=near-passkey-wallet"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",
+    "@passkey/sdk": "*",
     "@yudiel/react-qr-scanner": "^2.6.0",
     "bn.js": "^5.2.0",
     "bs58": "^6.0.0",
