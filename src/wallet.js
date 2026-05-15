@@ -944,12 +944,14 @@ export async function removeSessionKey(sessionKeyId, accountId) {
 }
 
 /**
- * Borsh-serialize a RequestMessage with ops (for CreateSession/RevokeSession/RevokeAllSessions).
+ * Borsh-serialize a RequestMessage with ops (for CreateSession/RevokeSession/RevokeAllSessions/SetBackupKey/RemoveBackupKey).
  * The ops are serialized as borsh WalletOp variants.
  *
  * WalletOp::CreateSession { session_key_id, public_key, ttl_secs } = discriminant 3
  * WalletOp::RevokeSession { session_key_id } = discriminant 4
  * WalletOp::RevokeAllSessions = discriminant 5
+ * WalletOp::SetBackupKey { public_key } = discriminant 6
+ * WalletOp::RemoveBackupKey = discriminant 7
  *
  * struct RequestMessage {
  *   chain_id, signer_id, nonce, created_at, timeout,
@@ -973,6 +975,13 @@ export function borshRequestMessageWithOps(msg) {
     } else if (op.type === 'RevokeAllSessions') {
       // Discriminant 5
       opsParts.push(new Uint8Array([5]))
+    } else if (op.type === 'SetBackupKey') {
+      // Discriminant 6
+      opsParts.push(new Uint8Array([6]))
+      opsParts.push(borshString(op.public_key))
+    } else if (op.type === 'RemoveBackupKey') {
+      // Discriminant 7
+      opsParts.push(new Uint8Array([7]))
     }
   }
 
@@ -991,7 +1000,7 @@ export function borshRequestMessageWithOps(msg) {
 }
 
 /**
- * Build the JSON args for w_execute_signed with a CreateSession, RevokeSession, or RevokeAllSessions op.
+ * Build the JSON args for w_execute_signed with a CreateSession, RevokeSession, RevokeAllSessions, SetBackupKey, or RemoveBackupKey op.
  * This goes through the passkey auth flow (same as handleSend/handleTestSign).
  */
 export function buildSessionOpArgs({ accountId, ops, created_at_iso }) {
@@ -1010,6 +1019,12 @@ export function buildSessionOpArgs({ accountId, ops, created_at_iso }) {
           }
           if (op.type === 'RevokeAllSessions') {
             return { op: 'revoke_all_sessions' }
+          }
+          if (op.type === 'SetBackupKey') {
+            return { op: 'set_backup_key', public_key: op.public_key }
+          }
+          if (op.type === 'RemoveBackupKey') {
+            return { op: 'remove_backup_key' }
           }
           return { op: 'revoke_session', session_key_id: op.session_key_id }
         }),

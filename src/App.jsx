@@ -79,6 +79,10 @@ export default function App() {
   const [sessionKeys, setSessionKeys] = useState(null) // map from contract
   const [sessionLoading, setSessionLoading] = useState(false)
 
+  // Backup passkey
+  const [backupKey, setBackupKey] = useState(null) // public key string or null
+  const [backupLoading, setBackupLoading] = useState(false)
+
   const addLog = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString()
     setLog(prev => [...prev.slice(-80), `[${ts}] ${msg}`])
@@ -744,6 +748,204 @@ export default function App() {
     }
   }
 
+  // ─── Backup Passkey Management ──
+
+  /**
+   * Query the contract for backup key status.
+   */
+  const refreshBackupKey = async (accountId) => {
+    try {
+      const result = await nearView(accountId, 'w_backup_key')
+      if (result && result !== 'null') {
+        setBackupKey(result)
+        addLog(`Backup passkey: ${result.slice(0, 30)}...`)
+        return result
+      } else {
+        setBackupKey(null)
+        addLog('No backup passkey set')
+        return null
+      }
+    } catch (err) {
+      addLog(`Backup key query error: ${err.message}`)
+      return null
+    }
+  }
+
+  /**
+   * Register a backup passkey (e.g., Ledger FIDO authenticator).
+   * Requires primary passkey auth to sign SetBackupKey operation.
+   */
+  const handleAddBackupKey = async () => {
+    if (!wallet) return
+    const accountId = wallet.nearAccountId
+
+    // Check if backup already exists
+    if (backupKey) {
+      if (!confirm('A backup passkey already exists. Replace it?')) return
+    }
+
+    setBackupLoading(true)
+    addLog('Starting backup passkey registration...')
+
+    try {
+      // Step 1: Prompt user for cross-platform authenticator (Ledger)
+      addLog('Please authenticate with your backup device (Ledger)...')
+
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          rp: { name: 'NEAR Passkey Wallet' },
+          user: {
+            id: new TextEncoder().encode(accountId),
+            name: accountId,
+            displayName: accountId,
+          },
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }], // P-256
+          authenticatorSelection: {
+            authenticatorAttachment: 'cross-platform', // Force Ledger/YubiKey
+            requireResidentKey: false,
+            userVerification: 'required',
+          },
+          timeout: 120000, // 2 minutes for Ledger flow
+          attestation: 'direct',
+        },
+      })
+
+      addLog(`Backup passkey created: ${credential.id.slice(0, 20)}...`)
+
+      // Step 2: Extract public key from attestation
+      const response = credential.response
+      const clientDataJSON = new TextDecoder().decode(response.clientDataJSON)
+      addLog(`[DEBUG] clientData: ${clientDataJSON.slice(0, 100)}...`)
+
+      // Parse attestation to get public key (COSE format for P-256)
+      const attestationObject = response.attestationObject
+      const authData = extractAuthData(attestationObject)
+      const publicKeyBytes = extractPublicKeyFromAuthData(authData)
+
+      if (!publicKeyBytes) {
+        throw new Error('Could not extract public key from backup passkey')
+      }
+
+      // Convert to NEAR P-256 format: "P256:" + base64(x + y)
+      const { x, y } = parseP256PublicKey(publicKeyBytes)
+      const xBase64 = btoa(String.fromCharCode(...x))
+      const yBase64 = btoa(String.fromCharCode(...y))
+      const nearPublicKey = `P256:${xBase64}.${yBase64}`
+
+      addLog(`Backup public key: ${nearPublicKey.slice(0, 30)}...`)
+
+      // Step 3: Sign SetBackupKey with PRIMARY passkey (FaceID)
+      addLog('Now authenticate with your primary passkey to authorize this backup...')
+
+      const created = new Date()
+      const createdTimestamp = Math.floor(created.getTime() / 1000)
+      const createdIso = created.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+      const nonce = Math.floor(Math.random() * 0xFFFFFFFF)
+      const args = buildSessionOpArgs({
+        accountId,
+        ops: [{ type: 'SetBackupKey', public_key: nearPublicKey }],
+        created_at_iso: createdIso,
+      })
+
+      const requestBytes = borshRequestMessageWithOps({
+        chain_id: CHAIN_ID,
+        signer_id: accountId,
+        nonce,
+        created_at: createdTimestamp,
+        timeout: 600,
+        ops: [{ type: 'SetBackupKey', public_key: nearPublicKey }],
+      })
+
+      // Primary passkey signs
+      const assertion = await signWithPasskey(
+        wallet.credentialId,
+        wallet.path,
+        requestBytes,
+        wallet.nearAccountId,
+      )
+
+      const proof = buildProof(assertion, requestBytes, wallet.path)
+      args.proof = proof
+
+      // Step 4: Submit transaction
+      addLog('Submitting SetBackupKey transaction...')
+      await nearCall(accountId, 'w_execute_signed', args)
+
+      addLog('Backup passkey registered successfully!')
+      setBackupKey(nearPublicKey)
+
+      // Refresh to confirm
+      await refreshBackupKey(accountId)
+    } catch (err) {
+      addLog(`Add backup key failed: ${err.message}`)
+      console.error(err)
+    } finally {
+      setBackupLoading(false)
+    }
+  }
+
+  /**
+   * Remove backup passkey. Requires primary passkey auth.
+   */
+  const handleRemoveBackupKey = async () => {
+    if (!wallet) return
+    const accountId = wallet.nearAccountId
+
+    if (!backupKey) {
+      addLog('No backup passkey to remove')
+      return
+    }
+
+    if (!confirm('Remove backup passkey? You will need your primary passkey to sign.')) return
+
+    setBackupLoading(true)
+    addLog('Removing backup passkey...')
+
+    try {
+      const created = new Date()
+      const createdTimestamp = Math.floor(created.getTime() / 1000)
+      const createdIso = created.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+      const nonce = Math.floor(Math.random() * 0xFFFFFFFF)
+      const args = buildSessionOpArgs({
+        accountId,
+        ops: [{ type: 'RemoveBackupKey' }],
+        created_at_iso: createdIso,
+      })
+
+      const requestBytes = borshRequestMessageWithOps({
+        chain_id: CHAIN_ID,
+        signer_id: accountId,
+        nonce,
+        created_at: createdTimestamp,
+        timeout: 600,
+        ops: [{ type: 'RemoveBackupKey' }],
+      })
+
+      const assertion = await signWithPasskey(
+        wallet.credentialId,
+        wallet.path,
+        requestBytes,
+        wallet.nearAccountId,
+      )
+
+      const proof = buildProof(assertion, requestBytes, wallet.path)
+      args.proof = proof
+
+      await nearCall(accountId, 'w_execute_signed', args)
+
+      addLog('Backup passkey removed')
+      setBackupKey(null)
+    } catch (err) {
+      addLog(`Remove backup key failed: ${err.message}`)
+      console.error(err)
+    } finally {
+      setBackupLoading(false)
+    }
+  }
+
   // ─── Login with existing passkey ──
   const handleLogin = async () => {
     setLoading(true)
@@ -1139,6 +1341,49 @@ export default function App() {
       </div>
 
       <div className="card">
+        <div className="card-title">Backup Passkey</div>
+        <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
+          Hardware backup (Ledger, YubiKey) for recovery. Requires primary passkey to add/remove.
+        </div>
+        {backupKey ? (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: '#eee' }}>
+              <span style={{ color: '#22c55e' }}>✓ Backup registered</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+              {backupKey.slice(0, 40)}...
+            </div>
+            <button
+              className="btn btn-danger"
+              onClick={handleRemoveBackupKey}
+              disabled={backupLoading}
+              style={{ marginTop: 8, fontSize: 12 }}
+            >
+              {backupLoading ? '...' : 'Remove Backup'}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <button
+              className="btn btn-primary"
+              onClick={handleAddBackupKey}
+              disabled={backupLoading}
+            >
+              {backupLoading ? '...' : 'Add Backup Passkey'}
+            </button>
+          </div>
+        )}
+        <button
+          className="btn btn-secondary"
+          onClick={() => refreshBackupKey(wallet?.nearAccountId)}
+          disabled={backupLoading}
+          style={{ fontSize: 11, marginTop: backupKey ? 0 : 8 }}
+        >
+          {backupLoading ? '...' : 'Refresh Status'}
+        </button>
+      </div>
+
+      <div className="card">
         <div className="card-title">Session Keys</div>
         <div style={{ fontSize: 13, color: '#777', marginBottom: 8 }}>
           Ed25519 keys that skip FaceID for faster signing. Require FaceID to create/revoke.
@@ -1348,4 +1593,162 @@ function parsePasskeyPublicKey(rawBytes, alg) {
     throw new Error(`Cannot parse P-256 key: ${rawBytes.length} bytes, no SPKI or COSE format found`)
   }
   throw new Error(`Unsupported algorithm: ${alg}`)
+}
+
+/**
+ * Extract authData from CBOR-encoded attestation object.
+ */
+function extractAuthData(attestationObject) {
+  // AttestationObject is CBOR: { fmt: ..., authData: ..., attStmt: ... }
+  // We need to extract authData bytes
+  try {
+    // CBOR decode manually (simple extraction)
+    // Look for authData key (a1 68 61 75 7444 61 74 61 = { "authData": ... })
+    const authDataKey = new TextEncoder().encode('authData')
+    let offset = 0
+    
+    // Find authData in CBOR
+    for (let i = 0; i < attestationObject.byteLength - 100; i++) {
+      // CBOR map key for "authData" (major type 3, text string)
+      if (attestationObject[i] === 0x68 && 
+          new TextDecoder().decode(attestationObject.slice(i, i + 8)) === 'authData') {
+        offset = i + 8 // Skip "authData"
+        // Next byte(s) is length (CBOR major type 2 for byte string)
+        if (attestationObject[offset] === 0x59) {
+          // Two-byte length
+          const len = (attestationObject[offset + 1] << 8) | attestationObject[offset + 2]
+          return attestationObject.slice(offset + 3, offset + 3 + len)
+        } else if (attestationObject[offset] === 0x58) {
+          // One-byte length
+          const len = attestationObject[offset + 1]
+          return attestationObject.slice(offset + 2, offset + 2 + len)
+        } else if (attestationObject[offset] <= 0x57) {
+          // Immediate length (0x47 = 7 bytes, etc.)
+          // But authData for P-256 is at least 77 bytes (37 + 16 + 2 + 2 + 1 + 32 + 32)
+          // Skip to next CBOR major type
+          continue
+        }
+      }
+    }
+    
+    // Fallback: try WebAuthn simpler parsing
+    // authData starts after rpIdHash(32) + flags(1) + signCount(4) +
+    // attestedCredentialData: aaguid(16) + credIdLen(2) + credId + pubkey
+    // Total header = 37 bytes
+    return attestationObject.slice(37)
+  } catch (e) {
+    console.error('extractAuthData error:', e)
+    return null
+  }
+}
+
+/**
+ * Extract public key from authData.
+ * authData = rpIdHash(32) + flags(1) + signCount(4) + 
+ *             attestedCredentialData: aaguid(16) + credIdLen(2) + credId + credentialPublicKey
+ */
+function extractPublicKeyFromAuthData(authData) {
+  if (!authData || authData.byteLength < 55) return null
+  
+  try {
+    let offset = 0
+    
+    // Skip rpIdHash (32 bytes)
+    offset += 32
+    
+    // flags (1 byte)
+    const flags = authData[offset]
+    offset += 1
+    
+    // signCount (4 bytes)
+    offset += 4
+    
+    // Check if attestedCredentialData is present (bit 6 of flags)
+    if (!(flags & 0x40)) {
+      console.log('No attestedCredentialData')
+      return null
+    }
+    
+    // attestedCredentialData:
+    // aaguid (16 bytes)
+    offset += 16
+    
+    // credentialIdLength (2 bytes, big-endian)
+    const credIdLen = (authData[offset] << 8) | authData[offset + 1]
+    offset += 2
+    
+    // credentialId
+    offset += credIdLen
+    
+    // credentialPublicKey - COSE format
+    // For P-256, this is CBOR-encoded COSE key
+    // Try to extract x and y coordinates
+    
+    // COSE Key format for P-256 (ES256):
+    // { 1: 2, -1: 1, -2: x, -3: y }  (kty=EC2, crv=P256, x, y)
+    // In CBOR: a3 01 02 20 01 21 58 20 <x bytes> 22 58 20 <y bytes>
+    
+    const coseKeyStart = offset
+    const remaining = authData.slice(offset)
+    
+    // Look for the CBOR map marker (a3 = map with 3 items, or a5 for 5 items)
+    // Then find x (-2 = 0x21 followed by 0x58 0x20) and y (-3 = 0x22 followed by 0x58 0x20)
+    
+    let x = null, y = null
+    
+    for (let i = 0; i < remaining.byteLength - 70; i++) {
+      // Look for -2 key followed by bytes(32)
+      if (remaining[i] === 0x21 && remaining[i + 1] === 0x58 && remaining[i + 2] === 0x20) {
+        x = remaining.slice(i + 3, i + 35)
+      }
+      // Look for -3 key followed by bytes(32)
+      if (remaining[i] === 0x22 && remaining[i + 1] === 0x58 && remaining[i + 2] === 0x20) {
+        y = remaining.slice(i + 3, i + 35)
+      }
+    }
+    
+    if (x && y && x.byteLength === 32 && y.byteLength === 32) {
+      // Concatenate x + y as uncompressed point (64 bytes total)
+      const publicKey = new Uint8Array(65)
+      publicKey[0] = 0x04 // uncompressed marker
+      publicKey.set(x, 1)
+      publicKey.set(y, 33)
+      return publicKey
+    }
+    
+    return null
+  } catch (e) {
+    console.error('extractPublicKeyFromAuthData error:', e)
+    return null
+  }
+}
+
+/**
+ * Parse P-256 public key from raw bytes.
+ * Input: 65 bytes (0x04 + x + y) or COSE format
+ * Output: { x: Uint8Array, y: Uint8Array }
+ */
+function parseP256PublicKey(bytes) {
+  if (bytes.byteLength === 65 && bytes[0] === 0x04) {
+    // Uncompressed point
+    return {
+      x: bytes.slice(1, 33),
+      y: bytes.slice(33, 65),
+    }
+  }
+  
+  // Try COSE format
+  for (let i = 0; i < bytes.byteLength - 70; i++) {
+    if (bytes[i] === 0x21 && bytes[i + 1] === 0x58 && bytes[i + 2] === 0x20) {
+      const x = bytes.slice(i + 3, i + 35)
+      for (let j = i + 35; j < bytes.byteLength - 35; j++) {
+        if (bytes[j] === 0x22 && bytes[j + 1] === 0x58 && bytes[j + 2] === 0x20) {
+          const y = bytes.slice(j + 3, j + 35)
+          return { x, y }
+        }
+      }
+    }
+  }
+  
+  throw new Error(`Cannot parse P-256 public key: ${bytes.byteLength} bytes`)
 }
