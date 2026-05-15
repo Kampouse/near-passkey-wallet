@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
+import { Scanner } from '@yudiel/react-qr-scanner'
 import {
   createPasskey,
   signWithPasskey,
@@ -96,10 +97,44 @@ export default function App() {
   const [backupKey, setBackupKey] = useState(null) // public key string or null
   const [backupLoading, setBackupLoading] = useState(false)
 
+  // QR scanning
+  const [showQrScanner, setShowQrScanner] = useState(false)
+  const [pendingTx, setPendingTx] = useState(null) // { to, amount, chain, label?, redirect? }
+
   const addLog = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString()
     setLog(prev => [...prev.slice(-80), `[${ts}] ${msg}`])
   }, [])
+
+  // Parse passkey:// URI from QR code or URL params
+  const parsePasskeyUri = useCallback((uri) => {
+    try {
+      const url = new URL(uri)
+      if (url.protocol !== 'passkey:') return null
+      if (url.pathname !== '/send') return null
+      
+      const params = url.searchParams
+      const chain = params.get('chain') || 'eth'
+      
+      const tx = {
+        to: params.get('to'),
+        amount: params.get('amount'),
+        chain,
+        label: params.get('label'),
+        redirect: params.get('redirect'),
+      }
+      
+      if (!tx.to || !tx.amount) {
+        addLog('Invalid QR: missing to or amount')
+        return null
+      }
+      
+      return tx
+    } catch (e) {
+      addLog(`Failed to parse QR: ${e.message}`)
+      return null
+    }
+  }, [addLog])
 
   // ─── Restore wallet on load ──
   useEffect(() => {
@@ -109,7 +144,18 @@ export default function App() {
       setScreen(SCREENS.DASHBOARD)
       refreshBalance(saved.ethAddress)
     }
-  }, [])
+    
+    // Check URL params for passkey:// URI
+    const params = new URLSearchParams(window.location.search)
+    const uri = params.get('uri')
+    if (uri) {
+      const tx = parsePasskeyUri(decodeURIComponent(uri))
+      if (tx) {
+        setPendingTx(tx)
+        addLog(`Pending TX from URL: ${tx.amount} ${tx.chain.toUpperCase()} to ${tx.to}`)
+      }
+    }
+  }, [parsePasskeyUri])
 
   // ─── Check name availability ──
   useEffect(() => {
@@ -577,6 +623,25 @@ export default function App() {
     setScreen(SCREENS.WELCOME)
     setLog([])
     setSessionKeys(null)
+  }
+
+  // ─── QR Scanner Handler ──
+  const handleQrScan = (data) => {
+    if (!data || !data[0]?.rawValue) return
+    const uri = data[0].rawValue
+    addLog(`Scanned: ${uri}`)
+    
+    const tx = parsePasskeyUri(uri)
+    if (tx) {
+      setPendingTx(tx)
+      setShowQrScanner(false)
+      addLog(`Pending: ${tx.amount} ${tx.chain.toUpperCase()} to ${tx.to}`)
+    }
+  }
+
+  const handleQrError = (err) => {
+    addLog(`QR error: ${err.message || err}`)
+    setShowQrScanner(false)
   }
 
   // ─── Test Sign with Session Key ──
@@ -1515,6 +1580,70 @@ export default function App() {
         </div>
       </div>
 
+      {/* Pending Transaction from QR/URL */}
+      {pendingTx && (
+        <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #22c55e' }}>
+          <div className="card-header">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)' }}>⟱</div>
+            <div>
+              <div className="card-title">{pendingTx.label || 'Pending Payment'}</div>
+              <div className="card-subtitle">Scan QR to confirm</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: '#ccc', marginTop: 8 }}>
+            <div>Amount: <strong style={{ color: '#fff' }}>{pendingTx.amount} {pendingTx.chain.toUpperCase()}</strong></div>
+            <div style={{ marginTop: 4 }}>To: <code style={{ fontSize: 11, color: '#888' }}>{pendingTx.to}</code></div>
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              onClick={() => {
+                if (pendingTx.chain === 'sol') {
+                  setSolSendTo(pendingTx.to)
+                  setSolSendAmount(pendingTx.amount)
+                } else {
+                  setSendTo(pendingTx.to)
+                  setSendAmount(pendingTx.amount)
+                }
+                addLog(`Form pre-filled from QR`)
+              }}
+            >
+              Fill Form
+            </button>
+            <button
+              className="btn btn-secondary"
+              style={{ flex: 1 }}
+              onClick={() => setPendingTx(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {showQrScanner && (
+        <div className="modal-overlay" onClick={() => setShowQrScanner(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Scan QR Code</h3>
+              <button className="btn btn-secondary" onClick={() => setShowQrScanner(false)}>✕</button>
+            </div>
+            <div style={{ padding: 16 }}>
+              <Scanner
+                onScan={handleQrScan}
+                onError={handleQrError}
+                styles={{ container: { width: '100%', maxWidth: 400 } }}
+              />
+              <p style={{ marginTop: 16, fontSize: 13, color: '#888', textAlign: 'center' }}>
+                Point camera at a <code>passkey://</code> QR code
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="dashboard-grid">
         <div className="card">
           <div className="card-header">
@@ -1687,6 +1816,9 @@ export default function App() {
         </div>
       </div>
 
+      <button className="btn btn-secondary btn-full" onClick={() => setShowQrScanner(true)} style={{ marginTop: 8 }}>
+        📷 Scan QR to Pay
+      </button>
       <button className="btn btn-danger btn-full" onClick={handleLogout} style={{ marginTop: 16 }}>
         Logout
       </button>
