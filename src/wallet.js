@@ -17,6 +17,7 @@ export const MPC_CONTRACT = 'v1.signer-prod.testnet'
 export const WALLET_CONTRACT = 'pwallet1.testnet'
 export const FACTORY_CONTRACT = 'pwallet-v2.kampy.testnet'
 export const ETH_RPC = 'https://ethereum-rpc.publicnode.com'
+export const BASE_RPC = 'https://base-rpc.publicnode.com'
 // Solana RPC - devnet for testing (mainnet for production)
 // Note: api.mainnet-beta.solana.com blocks browser requests (403)
 // Devnet: https://api.devnet.solana.com (get airdrops at faucet.solana.com)
@@ -293,8 +294,14 @@ export function nearPubkeyToEthAddress(nearKey) {
 
 // ─── Ethereum RPC ────────────────────────────────────────────
 
-async function ethRpc(method, params = []) {
-  const res = await fetch(ETH_RPC, {
+function getRpcUrl(chain) {
+  if (chain === 'base') return BASE_RPC
+  return ETH_RPC // default to ethereum
+}
+
+async function ethRpc(method, params = [], chain = 'ethereum') {
+  const rpcUrl = getRpcUrl(chain)
+  const res = await fetch(rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 }),
@@ -309,13 +316,13 @@ export async function getEthBalance(address) {
   return BigInt(balance)
 }
 
-export async function getEthNonce(address) {
-  const nonce = await ethRpc('eth_getTransactionCount', [address, 'latest'])
+export async function getEthNonce(address, chain = 'ethereum') {
+  const nonce = await ethRpc('eth_getTransactionCount', [address, 'latest'], chain)
   return parseInt(nonce, 16)
 }
 
-export async function getEthGasPrice() {
-  const res = await ethRpc('eth_feeHistory', [1, 'latest', [25]])
+export async function getEthGasPrice(chain = 'ethereum') {
+  const res = await ethRpc('eth_feeHistory', [1, 'latest', [25]], chain)
   if (res?.baseFeePerGas?.[1]) {
     const baseFee = BigInt(res.baseFeePerGas[1])
     return {
@@ -361,6 +368,121 @@ export async function deriveSolAddress(nearAccountId, path = 'solana') {
   // The base58 part IS the Solana address (32 bytes Ed25519 public key)
   const solAddress = publicKey.replace('ed25519:', '')
   return { derivedKey: publicKey, solAddress }
+}
+
+/**
+ * Derive Nostr public key from NEAR account using MPC.
+ * Path: 'nostr,1' for domain_id=1 (Ed25519)
+ * Returns { derivedKey, nostrPubkey, npub }
+ */
+export async function deriveNostrAddress(accountId) {
+  const result = await viewDerivedPublicKey(accountId, 'nostr,1')
+  // Result: "ed25519:Base58..." for domain 1
+  const publicKey = result
+  
+  if (!publicKey || !publicKey.startsWith('ed25519:')) {
+    throw new Error(`Invalid Nostr derived key (expected Ed25519, got ${publicKey}). ` +
+      `The MPC may not support Ed25519 domain. Check MPC contract version.`)
+  }
+  
+  // Convert ed25519:Base58 to hex pubkey
+  // Solana uses base58, Nostr uses hex
+  const base58Part = publicKey.replace('ed25519:', '')
+  
+  // Decode base58 to bytes, then to hex
+  const pubkeyBytes = base58ToBytes(base58Part)
+  const nostrPubkey = bytesToHex(pubkeyBytes)
+  
+  // Convert to npub (bech32)
+  const npub = bytesToNpub(pubkeyBytes)
+  
+  return { derivedKey: publicKey, nostrPubkey, npub }
+}
+
+// ─── Nostr Helpers ─────────────────────────────────────────────────
+
+/**
+ * Convert base58 string to Uint8Array
+ */
+function base58ToBytes(base58) {
+  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+  const bytes = []
+  let num = BigInt(0)
+  
+  for (let i = 0; i < base58.length; i++) {
+    const char = base58[i]
+    const idx = ALPHABET.indexOf(char)
+    if (idx === -1) throw new Error(`Invalid base58 character: ${char}`)
+    num = num * 58n + BigInt(idx)
+  }
+  
+  // Convert to bytes
+  const hex = num.toString(16).padStart(64, '0') // 32 bytes = 64 hex chars
+  const result = new Uint8Array(32)
+  for (let i = 0; i < 32; i++) {
+    result[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  
+  // Handle leading zeros
+  let leadingZeros = 0
+  for (let i = 0; i < base58.length && base58[i] === '1'; i++) {
+    leadingZeros++
+  }
+  if (leadingZeros > 0) {
+    const withZeros = new Uint8Array(leadingZeros + result.length)
+    withZeros.set(result, leadingZeros)
+    return withZeros
+  }
+  
+  return result
+}
+
+/**
+ * Convert bytes to hex string
+ */
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Convert bytes to npub (bech32)
+ */
+function bytesToNpub(bytes) {
+  const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+  
+  // Convert 8-bit to 5-bit
+  const fiveBit = []
+  let acc = 0, bits = 0
+  for (let i = 0; i < bytes.length; i++) {
+    acc = (acc << 8) | bytes[i]
+    bits += 8
+    while (bits >= 5) {
+      bits -= 5
+      fiveBit.push((acc >> bits) & 31)
+    }
+  }
+  if (bits > 0) {
+    fiveBit.push((acc << (5 - bits)) & 31)
+  }
+  
+  // Add checksum
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+  let chk = 1
+  const values = [...'npub'.split('').map(c => c.charCodeAt(0) >> 5), 0, ...'npub'.split('').map(c => c.charCodeAt(0) & 31), ...fiveBit, 0, 0, 0, 0, 0, 0]
+  for (let v of values) {
+    let b = chk >> 25
+    chk = ((chk & 0x1ffffff) << 5) ^ v
+    for (let i = 0; i < 5; i++) {
+      if ((b >> i) & 1) chk ^= GEN[i]
+    }
+  }
+  const checksum = []
+  for (let i = 0; i < 6; i++) {
+    checksum.push((chk >> (5 * (5 - i))) & 31)
+  }
+  
+  const combined = [...fiveBit, ...checksum]
+  return 'npub1' + combined.map(v => BECH32_CHARSET[v]).join('')
 }
 
 /**

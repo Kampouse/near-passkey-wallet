@@ -40,6 +40,7 @@ import {
   loadSessionKey,
   removeSessionKey,
   deriveSolAddress,
+  deriveNostrAddress,
   getSolBalance,
   getSolRecentBlockhash,
   buildSolTransferMessage,
@@ -70,6 +71,8 @@ export default function App() {
   const [ethBalance, setEthBalance] = useState(null)
   const [solBalance, setSolBalance] = useState(null)
   const [solAddress, setSolAddress] = useState(null)
+  const [nostrPubkey, setNostrPubkey] = useState(null) // hex pubkey
+  const [npub, setNpub] = useState(null) // bech32 npub
   const [loading, setLoading] = useState(false)
 
   // Name form
@@ -305,6 +308,23 @@ export default function App() {
       addLog(`SOL balance: ${Number(balance) / 1e9} SOL`)
     } catch (err) {
       addLog(`SOL balance check failed: ${err.message}`)
+    }
+  }
+
+  // ─── Nostr Key Derivation ──
+  const loadNostrKey = async (nearAccountId) => {
+    try {
+      const accountId = nearAccountId || wallet?.nearAccountId
+      if (!accountId) return
+
+      addLog('Deriving Nostr pubkey...')
+      const { nostrPubkey, npub } = await deriveNostrAddress(accountId)
+      setNostrPubkey(nostrPubkey)
+      setNpub(npub)
+      addLog(`Nostr pubkey: ${nostrPubkey.slice(0, 16)}...`)
+      addLog(`npub: ${npub}`)
+    } catch (err) {
+      addLog(`Nostr key derivation failed: ${err.message}`)
     }
   }
 
@@ -687,6 +707,7 @@ export default function App() {
     const payment = pendingPayment
     setLoading(true)
     const accountId = wallet.nearAccountId
+    let nonce, gasData
 
     try {
       // Determine chain from currency (USDC can be on multiple chains)
@@ -697,12 +718,33 @@ export default function App() {
       addLog(`Deposit address: ${payment.depositAddress}`)
       addLog(`Chain: ${chain}`)
 
-      // Step 1: Get ETH nonce + gas
+      // Step 1: Get ETH nonce + gas (use chain from payment, default base)
       addLog('Fetching nonce + gas prices...')
-      const [nonce, gasData] = await Promise.all([
-        getEthNonce(wallet.ethAddress),
-        getEthGasPrice(),
-      ])
+      addLog(`  RPC chain: ${chain}`)
+      addLog(`  ETH address: ${wallet.ethAddress}`)
+      
+      try {
+        const [nonceResult, gasResult] = await Promise.all([
+          getEthNonce(wallet.ethAddress, chain),
+          getEthGasPrice(chain),
+        ])
+        addLog(`  nonce RPC result: ${nonceResult}`)
+        addLog(`  gas RPC result: maxFee=${gasResult?.maxFeePerGas?.toString()}, priority=${gasResult?.maxPriorityFeePerGas?.toString()}`)
+        
+        if (nonceResult === null || nonceResult === undefined || isNaN(nonceResult)) {
+          throw new Error('Failed to fetch nonce from RPC')
+        }
+        if (!gasResult?.maxFeePerGas) {
+          throw new Error('Failed to fetch gas prices from RPC')
+        }
+        
+        nonce = nonceResult
+        gasData = gasResult
+      } catch (rpcErr) {
+        addLog(`  RPC error: ${rpcErr.message}`)
+        throw rpcErr
+      }
+      
       addLog(`Nonce: ${nonce}, maxFee: ${Number(gasData.maxFeePerGas / 10n**9n)} gwei`)
 
       // Step 2: Build unsigned ETH tx (USDC is an ERC20 on Base)
@@ -762,19 +804,27 @@ export default function App() {
 
       // Step 5: Borsh-serialize for challenge
       addLog('Computing challenge hash...')
+      addLog(`  signer_id: ${accountId}`)
+      addLog(`  nonce: ${executeArgs.msg.nonce}`)
+      addLog(`  created_at: ${new Date((now - 30) * 1000).toISOString()}`)
       const borshBytes = borshRequestMessageWithDAG({
         signer_id: accountId,
         nonce: executeArgs.msg.nonce,
         created_at_ts: now - 30,
         signArgsJson,
       })
+      addLog(`  borsh bytes: ${borshBytes.length}`)
       const challenge = computeChallenge(borshBytes)
-      addLog(`Challenge: ${Array.from(challenge).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0, 16)}...`)
+      addLog(`  challenge: ${Array.from(challenge).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0, 32)}...`)
+      addLog(`  challenge hex: 0x${Array.from(challenge).map(b=>b.toString(16).padStart(2,'0')).join('')}`)
 
       // Step 6: Sign with passkey (FaceID)
       addLog('Requesting passkey signature (FaceID)...')
+      addLog(`  credential ID: ${wallet.credentialId?.slice(0, 20)}...`)
       const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge)
-      addLog(`Passkey signature: ${passkeySig.signature.length} bytes`)
+      addLog(`  authenticator data: ${passkeySig.authenticatorData?.length || 0} bytes`)
+      addLog(`  client data: ${passkeySig.clientDataJSON?.slice(0, 50)}...`)
+      addLog(`  signature: ${passkeySig.signature.length} bytes`)
 
       // Step 7: Build proof
       const proof = buildProof(
@@ -813,26 +863,34 @@ export default function App() {
       // Step 12: Notify merchant callback
       if (payment.callback) {
         addLog('Notifying merchant...')
-        const callbackResult = await notifyCallback(payment, {
-          orderId: payment.orderId,
-          txHash,
-          from: wallet.ethAddress,
-          chain,
-        })
-        if (callbackResult.ok) {
-          addLog('Merchant notified successfully')
-        } else {
-          addLog(`Merchant notification failed: ${callbackResult.error || 'unknown error'}`)
+        try {
+          const callbackResult = await notifyCallback(payment, {
+            orderId: payment.orderId,
+            txHash,
+            from: wallet.ethAddress,
+            chain,
+          })
+          if (callbackResult.ok) {
+            addLog('Merchant notified successfully')
+          } else {
+            addLog(`Merchant notification failed: ${callbackResult.error || 'unknown error'}`)
+          }
+        } catch (cbErr) {
+          addLog(`Callback error: ${cbErr.message}`)
         }
       }
 
       // Done
       await refreshBalance()
       setPendingPayment(null)
-      addLog('Payment complete!')
+      addLog('✅ Payment complete!')
     } catch (err) {
-      addLog(`ERROR: ${err.message}`)
-      console.error(err)
+      const errMsg = err.message || String(err)
+      addLog(`❌ ERROR: ${errMsg}`)
+      if (errMsg.includes('invalid signature')) {
+        addLog('Hint: Check challenge hash computation or passkey credential')
+      }
+      console.error('Payment error:', err)
     } finally {
       setLoading(false)
     }
