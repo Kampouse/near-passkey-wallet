@@ -417,22 +417,12 @@ export async function getSolAccountInfo(address) {
 
 /**
  * Build a Solana transfer transaction message.
- * Returns serialized transaction bytes for MPC signing.
+ * Returns serialized transaction message bytes for MPC signing.
  * 
  * Solana transfer = SystemProgram.transfer instruction
- * Signed message = serialized transaction (without signatures)
+ * The message to sign is: header + accounts + blockhash + instructions
  */
-export function buildSolTransferTx({ from, to, lamports, recentBlockhash }) {
-  // Solana transaction format:
-  // - 4 bytes: num signatures (0 for unsigned)
-  // - 3 bytes: message header (num required signatures, num readonly signed, num readonly unsigned)
-  // -Compact-array: account addresses
-  // - 32 bytes: recent blockhash
-  // - Compact-array: instructions
-
-  // We build the message (not full transaction with signatures)
-  // MPC will sign the message, then we construct the full transaction with signature
-
+export function buildSolTransferMessage({ from, to, lamports, recentBlockhash }) {
   // Account addresses are base58 encoded, 32 bytes each
   const fromBytes = bs58.decode(from)
   const toBytes = bs58.decode(to)
@@ -486,49 +476,58 @@ export function buildSolTransferTx({ from, to, lamports, recentBlockhash }) {
     instructions,
   )
 
-  // Prefix with message length for signing
-  // Solana expects: <message_prefix> + message
-  // Message prefix = 0x03 0x01 (serialize + encode) but actually it's simpler
-  // The message to sign is just: header + accounts + blockhash + instructions
-  // With a prefix of "solana-offline-message" concept
-
   return message
 }
 
 /**
- * Sign a Solana transaction via MPC and broadcast.
- * 
- * @param {string} nearAccountId - NEAR wallet account
- * @param {Uint8Array} txBytes - Transaction message bytes
- * @param {string} path - MPC derivation path (default: 'solana')
- * @param {string} solSender - Solana sender address
+ * Assemble a signed Solana transaction.
+ * Format: <num_signatures> <signatures> <message>
  */
-export async function signAndSendSol({ nearAccountId, txBytes, path = 'solana', solSender }) {
-  // Get signature from MPC
-  const signatureResult = await nearView(MPC_CONTRACT, 'sign', {
-    request: {
-      path,
-      payload: Array.from(txBytes),
-    },
-    predecessor: nearAccountId,
-  })
-
-  // signatureResult has { big_r, s, recovery_id } for Ed25519
-  // For Solana, we need a 64-byte signature (r + s)
-  // Ed25519 signatures from MPC should be directly usable
-
-  const signature = signatureResult.signature || signatureResult
+export function assembleSignedSolTx(message, signature) {
+  // Transaction format:
+  // 1 byte: num_required_signatures (1 for transfer)
+  // 1 byte: num_readonly_signed_accounts (0)
+  // 1 byte: num_readonly_unsigned_accounts (1 - system program)
+  // Then: compact array of signatures, then message
   
-  // Broadcast to Solana RPC
-  // Construct full transaction with signature
-  const { blockhash } = await getSolRecentBlockhash()
+  // For Ed25519, signature is 64 bytes
+  const sigBytes = typeof signature === 'string' 
+    ? bs58.decode(signature)
+    : signature
   
-  // TODO: Broadcast - requires constructing full signed transaction
-  // For now, return the signature for manual verification
-  return {
-    signature,
-    status: 'signed',
+  if (sigBytes.length !== 64) {
+    throw new Error(`Invalid signature length: ${sigBytes.length}, expected 64`)
   }
+
+  // Compact array of signatures
+  const signatures = concatBytes(
+    encodeCompactU16(1), // 1 signature
+    sigBytes,
+  )
+
+  // Full transaction = signatures + message
+  return concatBytes(signatures, message)
+}
+
+/**
+ * Broadcast a signed Solana transaction.
+ */
+export async function broadcastSolTx(signedTxBytes) {
+  const txBase64 = btoa(String.fromCharCode(...signedTxBytes))
+  
+  const res = await fetch(SOL_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'sendTransaction',
+      params: [txBase64, { encoding: 'base64' }],
+    }),
+  })
+  const data = await res.json()
+  if (data.error) throw new Error(`SOL RPC: ${JSON.stringify(data.error)}`)
+  return data.result // transaction signature
 }
 
 // ─── Relay Submission ────────────────────────────────────────
