@@ -101,14 +101,23 @@ function uint8ArrayToHex(bytes) {
 export async function handleNostrConnectRequest(params) {
   const { clientPubkey, relays, secret, ourSecretKey, ourPubkey } = params
   
-  // Validate ourSecretKey is Uint8Array
+  // Log all inputs IMMEDIATELY
+  console.log('[NostrConnect] ========== ENTRY ==========')
+  console.log('[NostrConnect] params keys:', Object.keys(params || {}))
+  console.log('[NostrConnect] ourSecretKey:', typeof ourSecretKey, ourSecretKey?.constructor?.name, 'len:', ourSecretKey?.length)
+  console.log('[NostrConnect] ourPubkey:', typeof ourPubkey, 'len:', ourPubkey?.length, 'value:', ourPubkey?.slice(0, 16))
+  console.log('[NostrConnect] clientPubkey:', typeof clientPubkey, 'len:', clientPubkey?.length, 'value:', clientPubkey?.slice(0, 16))
+  
+  // Validate ourSecretKey
   if (!(ourSecretKey instanceof Uint8Array)) {
-    console.error('[NostrConnect] ourSecretKey is NOT Uint8Array, got:', typeof ourSecretKey, ourSecretKey?.constructor?.name)
-    throw new Error('ourSecretKey must be Uint8Array')
+    const err = new Error(`ourSecretKey must be Uint8Array, got ${typeof ourSecretKey} (${ourSecretKey?.constructor?.name})`)
+    console.error('[NostrConnect] VALIDATION FAILED:', err.message)
+    throw err
   }
   
   // Convert to hex string for getConversationKey (accepts hex)
   const secretKeyHex = uint8ArrayToHex(ourSecretKey)
+  console.log('[NostrConnect] secretKeyHex:', typeof secretKeyHex, 'len:', secretKeyHex?.length, 'value:', secretKeyHex?.slice(0, 16))
   
   console.log('[NostrConnect] Handling pairing request from:', clientPubkey.slice(0, 16))
   console.log('[NostrConnect] Our pubkey:', ourPubkey.slice(0, 16))
