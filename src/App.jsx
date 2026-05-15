@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
+import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
 import {
   createPasskey,
   signWithPasskey,
@@ -100,6 +101,7 @@ export default function App() {
   // QR scanning
   const [showQrScanner, setShowQrScanner] = useState(false)
   const [pendingTx, setPendingTx] = useState(null) // { to, amount, chain, label?, redirect? }
+  const [pendingPayment, setPendingPayment] = useState(null) // ParsedPayment from @passkey/sdk
 
   const addLog = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString()
@@ -631,6 +633,18 @@ export default function App() {
     const uri = data[0].rawValue
     addLog(`Scanned: ${uri}`)
     
+    // Check for passkey://pay URI (POS payment)
+    if (isPasskeyQr(uri)) {
+      const payment = parsePaymentQr(uri)
+      if (payment) {
+        setPendingPayment(payment)
+        setShowQrScanner(false)
+        addLog(`Payment request: ${payment.amount} ${payment.currency} to ${payment.merchant || payment.depositAddress}`)
+        return
+      }
+    }
+    
+    // Legacy passkey://send URI
     const tx = parsePasskeyUri(uri)
     if (tx) {
       setPendingTx(tx)
@@ -642,6 +656,168 @@ export default function App() {
   const handleQrError = (err) => {
     addLog(`QR error: ${err.message || err}`)
     setShowQrScanner(false)
+  }
+
+  // ─── Handle POS Payment (passkey://pay) ──
+  const handlePosPayment = async () => {
+    if (!pendingPayment) return
+    if (!wallet) {
+      addLog('ERROR: No wallet loaded')
+      return
+    }
+
+    const payment = pendingPayment
+    setLoading(true)
+    const accountId = wallet.nearAccountId
+
+    try {
+      // Determine chain from currency (USDC can be on multiple chains)
+      // For now, assume 'base' as default, but currency may indicate chain
+      const chain = payment.chain || 'base'
+      
+      addLog(`Processing payment: ${payment.amount} ${payment.currency} to ${payment.merchant || 'Merchant'}`)
+      addLog(`Deposit address: ${payment.depositAddress}`)
+      addLog(`Chain: ${chain}`)
+
+      // Step 1: Get ETH nonce + gas
+      addLog('Fetching nonce + gas prices...')
+      const [nonce, gasData] = await Promise.all([
+        getEthNonce(wallet.ethAddress),
+        getEthGasPrice(),
+      ])
+      addLog(`Nonce: ${nonce}, maxFee: ${Number(gasData.maxFeePerGas / 10n**9n)} gwei`)
+
+      // Step 2: Build unsigned ETH tx (USDC is an ERC20 on Base)
+      // For native ETH payment, use valueWei directly
+      // For now, we'll send native ETH equal to the amount
+      // TODO: Add USDC contract call for USDC payments
+      const valueWei = BigInt(Math.floor(parseFloat(payment.amount) * 1e18))
+      
+      // Step 2a: Decide if this is native ETH or USDC
+      // If currency === 'USDC', we need to call the USDC contract
+      // For MVP, we'll just send native ETH equivalent
+      const isErc20 = payment.currency.toUpperCase() === 'USDC'
+      
+      let unsignedTx
+      if (isErc20) {
+        // TODO: Build ERC20 transfer call
+        // For now, treat as native ETH
+        addLog('Note: USDC payments will be implemented as ERC20 transfer')
+        const { unsignedTxHex, txPayloadHash } = buildEthTx({
+          nonce,
+          maxFeePerGas: gasData.maxFeePerGas,
+          maxPriorityFeePerGas: gasData.maxPriorityFeePerGas,
+          to: payment.depositAddress,
+          valueWei,
+          from: wallet.ethAddress,
+        })
+        unsignedTx = { unsignedTxHex, txPayloadHash }
+      } else {
+        addLog('Building unsigned ETH transaction...')
+        const { unsignedTxHex, txPayloadHash } = buildEthTx({
+          nonce,
+          maxFeePerGas: gasData.maxFeePerGas,
+          maxPriorityFeePerGas: gasData.maxPriorityFeePerGas,
+          to: payment.depositAddress,
+          valueWei,
+          from: wallet.ethAddress,
+        })
+        unsignedTx = { unsignedTxHex, txPayloadHash }
+      }
+      
+      addLog(`Unsigned tx: ${unsignedTx.unsignedTxHex.slice(0, 40)}...`)
+      addLog(`Payload hash: ${Array.from(unsignedTx.txPayloadHash).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,16)}...`)
+
+      // Step 3: Build MPC sign args
+      const signArgsJson = buildMpcSignArgs(unsignedTx.txPayloadHash, wallet.path || 'ethereum,1')
+      const signArgsB64 = btoa(signArgsJson)
+
+      // Step 4: Build w_execute_signed args
+      const now = Math.floor(Date.now() / 1000)
+      const createdAtIso = new Date((now - 30) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+      const executeArgs = buildExecuteSignedArgs({
+        accountId,
+        signArgsB64,
+        path: wallet.path || 'ethereum,1',
+        created_at_iso: createdAtIso,
+      })
+
+      // Step 5: Borsh-serialize for challenge
+      addLog('Computing challenge hash...')
+      const borshBytes = borshRequestMessageWithDAG({
+        signer_id: accountId,
+        nonce: executeArgs.msg.nonce,
+        created_at_ts: now - 30,
+        signArgsJson,
+      })
+      const challenge = computeChallenge(borshBytes)
+      addLog(`Challenge: ${Array.from(challenge).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0, 16)}...`)
+
+      // Step 6: Sign with passkey (FaceID)
+      addLog('Requesting passkey signature (FaceID)...')
+      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge)
+      addLog(`Passkey signature: ${passkeySig.signature.length} bytes`)
+
+      // Step 7: Build proof
+      const proof = buildProof(
+        passkeySig.authenticatorData,
+        passkeySig.clientDataJSON,
+        passkeySig.signature,
+      )
+
+      // Step 8: Submit via relay
+      addLog('Submitting to wallet contract via relay...')
+      executeArgs.proof = proof
+      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId)
+      addLog(`Relay: tx=${result.tx_hash?.slice(0,20)}..., Status=${result.status}`)
+
+      if (result.status === 'Failure') {
+        throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`)
+      }
+
+      // Step 9: Extract MPC signature
+      if (!result.return_value?.big_r) {
+        throw new Error('No MPC signature in response')
+      }
+      const mpcSig = result.return_value
+      addLog(`MPC signature: scheme=${mpcSig.scheme}, recovery=${mpcSig.recovery_id}`)
+
+      // Step 10: Assemble signed ETH tx
+      addLog('Assembling signed ETH transaction...')
+      const signedTxHex = assembleSignedEthTx(unsignedTx.unsignedTxHex, mpcSig, wallet.ethAddress)
+      addLog(`Signed tx: ${signedTxHex.length} chars`)
+
+      // Step 11: Broadcast to Ethereum
+      addLog('Broadcasting to Ethereum...')
+      const txHash = await broadcastEthTx(signedTxHex)
+      addLog(`ETH tx broadcast! Hash: ${txHash}`)
+
+      // Step 12: Notify merchant callback
+      if (payment.callback) {
+        addLog('Notifying merchant...')
+        const callbackResult = await notifyCallback(payment, {
+          orderId: payment.orderId,
+          txHash,
+          from: wallet.ethAddress,
+          chain,
+        })
+        if (callbackResult.ok) {
+          addLog('Merchant notified successfully')
+        } else {
+          addLog(`Merchant notification failed: ${callbackResult.error || 'unknown error'}`)
+        }
+      }
+
+      // Done
+      await refreshBalance()
+      setPendingPayment(null)
+      addLog('Payment complete!')
+    } catch (err) {
+      addLog(`ERROR: ${err.message}`)
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
   }
 
   // ─── Test Sign with Session Key ──
@@ -1617,6 +1793,56 @@ export default function App() {
               onClick={() => setPendingTx(null)}
             >
               Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Pending POS Payment from passkey://pay */}
+      {pendingPayment && (
+        <div className="card" style={{ marginBottom: 16, borderLeft: '4px solid #8b5cf6' }}>
+          <div className="card-header">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)' }}>💳</div>
+            <div>
+              <div className="card-title">{pendingPayment.merchant || 'Payment Request'}</div>
+              <div className="card-subtitle">Pay with FaceID</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: '#ccc', marginTop: 8 }}>
+            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 8 }}>
+              {pendingPayment.amount} {pendingPayment.currency}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 11 }}>
+              <span style={{ color: '#888' }}>To: </span>
+              <code style={{ color: '#666' }}>{pendingPayment.depositAddress.slice(0, 10)}...{pendingPayment.depositAddress.slice(-8)}</code>
+            </div>
+            {pendingPayment.orderId && (
+              <div style={{ marginTop: 4, fontSize: 11 }}>
+                <span style={{ color: '#888' }}>Order: </span>
+                <code style={{ color: '#666' }}>{pendingPayment.orderId}</code>
+              </div>
+            )}
+            <div style={{ marginTop: 4, fontSize: 11 }}>
+              <span style={{ color: '#888' }}>Chain: </span>
+              <span style={{ color: pendingPayment.chain === 'base' ? '#0052ff' : '#888' }}>{pendingPayment.chain}</span>
+            </div>
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              style={{ flex: 2 }}
+              onClick={handlePosPayment}
+              disabled={loading}
+            >
+              {loading ? <><span className="spinner"></span> Processing...</> : 'Pay with FaceID'}
+            </button>
+            <button
+              className="btn btn-secondary"
+              style={{ flex: 1 }}
+              onClick={() => setPendingPayment(null)}
+              disabled={loading}
+            >
+              Cancel
             </button>
           </div>
         </div>
