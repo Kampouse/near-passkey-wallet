@@ -653,6 +653,20 @@ export default function App() {
     }
   }
 
+  // ─── Format payment amount for display ──
+  const formatPaymentDisplay = (payment) => {
+    if (!payment) return null
+    
+    // If merchant attached swap quote, show what user pays
+    if (payment.swap) {
+      const fromAmt = parseFloat(payment.swap.fromAmount).toFixed(6)
+      return `${fromAmt} ${payment.swap.fromSymbol} → ${payment.amount} ${payment.currency}`
+    }
+    
+    // Standard payment
+    return `${payment.amount} ${payment.currency}`
+  }
+
   const handleQrError = (err) => {
     addLog(`QR error: ${err.message || err}`)
     setShowQrScanner(false)
@@ -1810,7 +1824,18 @@ export default function App() {
           </div>
           <div style={{ fontSize: 13, color: '#ccc', marginTop: 8 }}>
             <div style={{ fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 8 }}>
-              {pendingPayment.amount} {pendingPayment.currency}
+              {pendingPayment.swap ? (
+                <>
+                  <span>{formatPaymentDisplay(pendingPayment)}</span>
+                  {pendingPayment.swap.fee && parseFloat(pendingPayment.swap.fee) > 0 && (
+                    <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+                      Fee: ~${pendingPayment.swap.fee}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <span>{pendingPayment.amount} {pendingPayment.currency}</span>
+              )}
             </div>
             <div style={{ marginTop: 4, fontSize: 11 }}>
               <span style={{ color: '#888' }}>To: </span>
@@ -1824,7 +1849,12 @@ export default function App() {
             )}
             <div style={{ marginTop: 4, fontSize: 11 }}>
               <span style={{ color: '#888' }}>Chain: </span>
-              <span style={{ color: pendingPayment.chain === 'base' ? '#0052ff' : '#888' }}>{pendingPayment.chain}</span>
+              <span style={{ color: pendingPayment.chain === 'base' ? '#0052ff' : '#888' }}>
+                {pendingPayment.swap ? pendingPayment.swap.fromChain : pendingPayment.chain}
+              </span>
+              {pendingPayment.swap && pendingPayment.swap.fromChain !== pendingPayment.swap.toChain && (
+                <span style={{ color: '#888' }}> → {pendingPayment.swap.toChain}</span>
+              )}
             </div>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
