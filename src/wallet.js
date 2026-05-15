@@ -791,6 +791,7 @@ export async function broadcastEthTx(signedTxHex) {
 
 /**
  * Build the MPC sign args JSON for an ETH tx payload hash.
+ * Uses ECDSA (domain 0).
  */
 export function buildMpcSignArgs(payloadHash, path = 'ethereum,1') {
   return JSON.stringify({
@@ -799,6 +800,21 @@ export function buildMpcSignArgs(payloadHash, path = 'ethereum,1') {
       path,
       key_version: 0,
     },
+  })
+}
+
+/**
+ * Build the MPC sign args JSON for EdDSA (Ed25519/Solana).
+ * EdDSA signs the FULL MESSAGE, not a hash.
+ * Uses domain_id 1 for Ed25519.
+ */
+export function buildMpcSignArgsEdDSA(messageBytes, path = 'solana') {
+  // EdDSA payload is hex-encoded full message (32-1232 bytes)
+  const hexMsg = Array.from(messageBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+  return JSON.stringify({
+    path,
+    payload_v2: { Eddsa: '0x' + hexMsg },
+    domain_id: 1,
   })
 }
 

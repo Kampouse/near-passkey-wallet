@@ -28,6 +28,7 @@ import {
   assembleSignedEthTx,
   broadcastEthTx,
   buildMpcSignArgs,
+  buildMpcSignArgsEdDSA,
   buildExecuteSignedArgs,
   buildSessionOpArgs,
   generateSessionKeyPair,
@@ -395,17 +396,14 @@ export default function App() {
       })
       addLog(`Message: ${message.length} bytes`)
 
-      // Step 3: Sign via MPC (passkey auth for wallet contract, MPC signs SOL tx)
-      // Need to hash the message for Ed25519 signing
+      // Step 3: Sign via MPC (EdDSA domain = 1)
+      // EdDSA signs the FULL MESSAGE, not a hash!
       addLog('Signing via MPC...')
       
-      // Use SHA-256 hash of the message for Ed25519 signing
-      const messageHash = new Uint8Array(await crypto.subtle.digest('SHA-256', message))
-      addLog(`Message hash: ${Array.from(messageHash).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,16)}...`)
-
-      // Build MPC sign args
-      const signArgsJson = buildMpcSignArgs(messageHash, 'solana')
+      // Build MPC sign args with EdDSA payload format
+      const signArgsJson = buildMpcSignArgsEdDSA(message, 'solana')
       const signArgsB64 = btoa(signArgsJson)
+      addLog(`Sign args: payload=${message.length} bytes, domain_id=1 (EdDSA)`)
 
       // Step 4: Build w_execute_signed args
       const now = Math.floor(Date.now() / 1000)
@@ -450,29 +448,42 @@ export default function App() {
       }
 
       // Step 9: Extract MPC signature
-      if (!result.return_value?.big_r) {
-        throw new Error('No signature returned from MPC')
+      // EdDSA returns: { scheme: "Ed25519", signature: "0x..." } - 64 bytes hex
+      const returnValue = result.return_value
+      if (!returnValue) {
+        throw new Error('No return value from MPC')
       }
 
-      // MPC returns { big_r, s, recovery_id } for Ed25519
-      // For Solana, we need 64-byte R + S
-      const bigR = result.return_value.big_r
-      const s = result.return_value.s
-      addLog(`MPC signature: R=${bigR?.slice(0,16)}..., s=${s?.toString(16)?.slice(0,16)}...`)
+      // Check signature format (Ed25519 vs Secp256k1)
+      if (returnValue.scheme !== 'Ed25519') {
+        throw new Error(`Unexpected signature scheme: ${returnValue.scheme}, expected Ed25519`)
+      }
 
-      // Reconstruct Ed25519 signature from R and S
-      // Ed25519 signature is R (32 bytes) + S (32 bytes)
-      // big_r is hex string, s is u256 (we need to handle carefully)
-      // For now, assume MPC returns signature in usable format
-      
-      // TODO: The MPC contract signature format needs investigation
-      // Ed25519 signatures from NEAR MPC may need conversion
-      addLog('SOL transaction signed! (broadcast TBD)')
-      
+      // signature is hex string "0x..." -> convert to bytes
+      const sigHex = returnValue.signature
+      if (!sigHex) {
+        throw new Error('No signature in MPC response')
+      }
+      addLog(`MPC Ed25519 signature: ${sigHex.slice(0, 20)}...`)
+
+      const sigBytes = new Uint8Array(sigHex.length / 2 - 1)
+      for (let i = 2; i < sigHex.length; i += 2) {
+        sigBytes[(i - 2) / 2] = parseInt(sigHex.substr(i, 2), 16)
+      }
+      addLog(`Signature length: ${sigBytes.length} bytes`)
+
+      if (sigBytes.length !== 64) {
+        throw new Error(`Invalid Ed25519 signature length: ${sigBytes.length}, expected 64`)
+      }
+
       // Step 10: Assemble and broadcast
-      // const signedTx = assembleSignedSolTx(message, signature)
-      // const txSig = await broadcastSolTx(signedTx)
-      // addLog(`SOL tx sent: ${txSig.slice(0, 16)}...`)
+      addLog('Assembling signed SOL transaction...')
+      const signedTx = assembleSignedSolTx(message, sigBytes)
+      addLog(`Signed tx: ${signedTx.length} bytes`)
+
+      addLog('Broadcasting to Solana...')
+      const txSig = await broadcastSolTx(signedTx)
+      addLog(`SOL tx sent: ${txSig.slice(0, 16)}...`)
 
       await refreshSolBalance(accountId)
       addLog('SOL send complete!')
