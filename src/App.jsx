@@ -640,6 +640,8 @@ export default function App() {
         setPendingPayment(payment)
         setShowQrScanner(false)
         addLog(`Payment request: ${payment.amount} ${payment.currency} to ${payment.merchant || payment.depositAddress}`)
+        // Navigate to dashboard to show payment UI
+        setScreen(SCREENS.DASHBOARD)
         return
       }
     }
@@ -1862,9 +1864,9 @@ export default function App() {
               className="btn btn-primary"
               style={{ flex: 2 }}
               onClick={handlePosPayment}
-              disabled={loading}
+              disabled={loading || !wallet}
             >
-              {loading ? <><span className="spinner"></span> Processing...</> : 'Pay with FaceID'}
+              {loading ? <><span className="spinner"></span> Processing...</> : wallet ? 'Pay with FaceID' : 'Login First'}
             </button>
             <button
               className="btn btn-secondary"
