@@ -107,7 +107,8 @@ export function parsePaymentQr(uri: string): ParsedPayment | null {
     const url = new URL(uri)
 
     if (url.protocol !== 'passkey:') return null
-    if (url.pathname !== '/pay') return null
+    // Handle both passkey://pay and passkey:/pay
+    if (url.host !== 'pay' && url.pathname !== '/pay') return null
 
     const p = url.searchParams
 
@@ -203,7 +204,8 @@ export async function notifyCallback(
 export function isPasskeyQr(uri: string): boolean {
   try {
     const url = new URL(uri)
-    return url.protocol === 'passkey:' && url.pathname === '/pay'
+    // Handle both passkey://pay?... (host=pay) and passkey:/pay?... (pathname=/pay)
+    return url.protocol === 'passkey:' && (url.host === 'pay' || url.pathname === '/pay')
   } catch {
     return false
   }

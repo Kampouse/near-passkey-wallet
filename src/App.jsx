@@ -635,14 +635,16 @@ export default function App() {
     
     // Check for passkey://pay URI (POS payment)
     if (isPasskeyQr(uri)) {
+      addLog('Parsing payment QR...')
       const payment = parsePaymentQr(uri)
       if (payment) {
+        addLog(`✓ Parsed: ${payment.amount} ${payment.currency} to ${payment.merchant || payment.depositAddress.slice(0,10)}...`)
         setPendingPayment(payment)
         setShowQrScanner(false)
-        addLog(`Payment request: ${payment.amount} ${payment.currency} to ${payment.merchant || payment.depositAddress}`)
-        // Navigate to dashboard to show payment UI
         setScreen(SCREENS.DASHBOARD)
         return
+      } else {
+        addLog('✗ Failed to parse payment QR - check URI format')
       }
     }
     
