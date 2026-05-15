@@ -40,6 +40,7 @@ import {
   WALLET_CONTRACT,
   FACTORY_CONTRACT,
   RELAY_URL,
+  base58Decode,
 } from './wallet.js'
 
 // ─── States ──────────────────────────────────────────────────
@@ -466,6 +467,27 @@ export default function App() {
       addLog('Signing with session key...')
       const signature = await signWithSessionKey(stored.privateKey, msgHash)
       addLog(`Session signature: ${signature.slice(0, 20)}...`)
+
+      // VERIFY: Check signature locally before sending to contract
+      const sigBytes = base58Decode(signature)
+      const pubKeyBytes = base58Decode(stored.publicKey.replace('ed25519:', ''))
+      const pubKeyCrypto = await crypto.subtle.importKey(
+        'raw',
+        pubKeyBytes,
+        { name: 'Ed25519' },
+        false,
+        ['verify'],
+      )
+      const isValid = await crypto.subtle.verify(
+        { name: 'Ed25519' },
+        pubKeyCrypto,
+        sigBytes,
+        msgHash,
+      )
+      addLog(`[VERIFY] Local signature valid: ${isValid}`)
+      if (!isValid) {
+        throw new Error('Signature verification failed locally - keypair mismatch!')
+      }
 
       // Step 5: Build args for w_execute_session
       const createdAtIso = new Date(createdAtTs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
@@ -1103,6 +1125,68 @@ export default function App() {
             style={{ flex: 1 }}
           >
             {sessionLoading ? '...' : 'Create Session Key'}
+          </button>
+        </div>
+        
+        {/* Debug: Show local IndexedDB keys */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #333' }}>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={async () => {
+              try {
+                const IDB_NAME = 'passkey-wallet'
+                const IDB_STORE = 'session-keys'
+                const IDB_VERSION = 2
+                addLog('Opening IndexedDB...')
+                const db = await new Promise((resolve, reject) => {
+                  const req = indexedDB.open(IDB_NAME, IDB_VERSION)
+                  req.onupgradeneeded = () => {
+                    const db = req.result
+                    if (!db.objectStoreNames.contains(IDB_STORE)) {
+                      db.createObjectStore(IDB_STORE)
+                    }
+                  }
+                  req.onsuccess = () => resolve(req.result)
+                  req.onerror = () => reject(req.error)
+                })
+                addLog(`DB opened, object stores: ${Array.from(db.objectStoreNames).join(', ') || '(none)'}`)
+                if (!db.objectStoreNames.contains(IDB_STORE)) {
+                  addLog('ERROR: session-keys store not found')
+                  return
+                }
+                const tx = db.transaction(IDB_STORE, 'readonly')
+                const store = tx.objectStore(IDB_STORE)
+                const all = await new Promise((resolve, reject) => {
+                  const req = store.getAll()
+                  req.onsuccess = () => resolve(req.result)
+                  req.onerror = () => reject(req.error)
+                })
+                addLog('=== IndexedDB Session Keys ===')
+                if (all.length === 0) {
+                  addLog('  (none stored)')
+                } else {
+                  all.forEach(k => {
+                    addLog(`  key: "${k.sessionKeyId}"`)
+                    addLog(`  accountId: "${k.accountId}"`)
+                    addLog(`  publicKey: "${k.publicKey}"`)
+                  })
+                }
+                addLog('=== Contract Session Keys ===')
+                if (sessionKeys && Object.keys(sessionKeys).length > 0) {
+                  Object.entries(sessionKeys).forEach(([id, k]) => {
+                    addLog(`  ${id}: ${k.public_key}`)
+                  })
+                } else {
+                  addLog('  (none loaded)')
+                }
+              } catch (err) {
+                addLog(`ERROR: ${err.message}`)
+                console.error(err)
+              }
+            }}
+          >
+            Debug: Compare Keys
           </button>
         </div>
       </div>

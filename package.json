@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:mpc": "node scripts/test-mpc-sign.mjs"
+    "deploy": "./scripts/deploy.sh",
+    "deploy:frontend": "npm run build && npx wrangler pages deploy dist --project-name=near-passkey-wallet"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",

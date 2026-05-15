@@ -14,7 +14,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 
 export const NEAR_RPC = 'https://rpc.testnet.near.org'
 export const MPC_CONTRACT = 'v1.signer-prod.testnet'
-export const WALLET_CONTRACT = 'pwallet2.testnet'
+export const WALLET_CONTRACT = 'pwallet1.testnet'
 export const FACTORY_CONTRACT = 'pwallet-v2.kampy.testnet'
 export const ETH_RPC = 'https://ethereum-rpc.publicnode.com'
 export const RELAY_URL = 'https://near-wallet-relay.kj95hgdgnn.workers.dev'
@@ -846,7 +846,7 @@ export async function getSessionKey(accountId, sessionKeyId) {
 
 const IDB_NAME = 'passkey-wallet'
 const IDB_STORE = 'session-keys'
-const IDB_VERSION = 1
+const IDB_VERSION = 2
 
 function openSessionDB() {
   return new Promise((resolve, reject) => {
