@@ -26,6 +26,11 @@ pub enum WalletOp {
         session_key_id: String,
     } = 4,
 
+    /// Revoke ALL session keys in one operation.
+    /// Requires passkey authentication (SignedRequest actor).
+    /// Useful for emergency revocation when a session key may be compromised.
+    RevokeAllSessions = 5,
+
     /// Custom op for third-party implementations.
     Custom {
         #[cfg_attr(

@@ -196,6 +196,7 @@ impl Contract {
                 | WalletOp::Custom { .. } => {}
                 WalletOp::CreateSession { .. }
                 | WalletOp::RevokeSession { .. }
+                | WalletOp::RevokeAllSessions
                 | WalletOp::SetSignatureMode { .. } => {
                     return Err(Error::SessionOpNotAllowed(op.clone()));
                 }
@@ -257,6 +258,14 @@ impl Contract {
                 }
                 self.revoke_session(session_key_id, actor)
             }
+            WalletOp::RevokeAllSessions => {
+                // Only SignedRequest can revoke all sessions
+                match &actor {
+                    Actor::SignedRequest(_) => {}
+                    _ => return Err(Error::SessionOpNotAllowed(WalletOp::RevokeAllSessions)),
+                }
+                self.revoke_all_sessions(actor)
+            }
 
             WalletOp::Custom { .. } => env::panic_str("custom ops are not supported"),
         }
@@ -269,6 +278,15 @@ impl Contract {
         ttl_secs: u32,
         actor: Actor<'_>,
     ) -> Result<()> {
+        // SECURITY: Cap TTL to 24 hours to limit exposure if session key is compromised
+        const MAX_SESSION_TTL_SECS: u32 = 24 * 60 * 60; // 24 hours
+        if ttl_secs > MAX_SESSION_TTL_SECS {
+            return Err(Error::SessionTtlTooLong {
+                requested: ttl_secs,
+                max: MAX_SESSION_TTL_SECS,
+            });
+        }
+
         // Emit event first to help with debugging
         WalletEvent::SessionCreated {
             session_key_id: session_key_id.clone(),
@@ -314,6 +332,21 @@ impl Contract {
         if self.session_keys.remove(&session_key_id).is_none() {
             return Err(Error::SessionKeyNotFound(session_key_id));
         }
+
+        Ok(())
+    }
+
+    fn revoke_all_sessions(&mut self, actor: Actor<'_>) -> Result<()> {
+        let count = self.session_keys.len();
+
+        // Emit event for auditing
+        WalletEvent::AllSessionsRevoked {
+            count,
+            by: actor,
+        }
+        .emit();
+
+        self.session_keys.clear();
 
         Ok(())
     }

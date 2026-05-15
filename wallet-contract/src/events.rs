@@ -62,6 +62,15 @@ pub enum WalletEvent<'a> {
         /// Actor of the corresponding request
         by: Actor<'a>,
     },
+
+    /// All session keys have been revoked (emergency revocation).
+    #[event_version("1.0.0")]
+    AllSessionsRevoked {
+        /// Number of sessions revoked
+        count: usize,
+        /// Actor of the corresponding request
+        by: Actor<'a>,
+    },
 }
 
 /// Actor of the request

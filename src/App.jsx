@@ -435,8 +435,11 @@ export default function App() {
       if (!stored) {
         throw new Error('Session key not found in IndexedDB. Click "Create Session Key" first.')
       }
+      if (stored.needsMigration) {
+        throw new Error('Session key uses old (insecure) storage format. Please revoke this session and create a new one.')
+      }
       if (!stored.privateKey) {
-        throw new Error('Session key private key is null (old storage format). Clear IndexedDB and recreate session key.')
+        throw new Error('Session key private key is missing. Please revoke and recreate.')
       }
       addLog(`Session key loaded: ${stored.publicKey?.slice(0, 20)}...`)
 
@@ -563,7 +566,7 @@ export default function App() {
       addLog(`Session public key: ${keyPair.publicKey.slice(0, 30)}...`)
 
       const sessionKeyId = `session-${Date.now()}`
-      const ttlSecs = 86400 * 30 // 30 days
+      const ttlSecs = 86400 // 24 hours (contract enforces max)
 
       // Step 2: Build the CreateSession op args
       const now = Math.floor(Date.now() / 1000)
@@ -604,9 +607,9 @@ export default function App() {
         throw new Error(`CreateSession failed: ${JSON.stringify(result).slice(0, 300)}`)
       }
 
-      // Step 7: Save private key locally (as JWK, not CryptoKey)
-      await saveSessionKey(sessionKeyId, { publicKey: keyPair.publicKey, privateKeyJwk: keyPair.privateKeyJwk }, accountId)
-      addLog(`Session key "${sessionKeyId}" created! TTL: 30 days`)
+      // Step 7: Save private key locally (as CryptoKey handle, non-extractable)
+      await saveSessionKey(sessionKeyId, { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey }, accountId)
+      addLog(`Session key "${sessionKeyId}" created! TTL: 24 hours`)
 
       // Refresh the list
       await refreshSessionKeys(accountId)
@@ -669,6 +672,72 @@ export default function App() {
       await refreshSessionKeys(accountId)
     } catch (err) {
       addLog(`RevokeSession ERROR: ${err.message}`)
+      console.error(err)
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  /**
+   * Revoke ALL session keys (emergency operation).
+   * Requires passkey authentication.
+   */
+  const handleRevokeAllSessions = async () => {
+    if (!wallet) return
+    if (!sessionKeys || Object.keys(sessionKeys).length === 0) return
+    
+    const count = Object.keys(sessionKeys).length
+    if (!confirm(`Revoke all ${count} session keys? This requires FaceID.`)) return
+    
+    setSessionLoading(true)
+    const accountId = wallet.nearAccountId
+
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      const createdAtTs = now - 30
+      const createdAtIso = new Date(createdAtTs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+      const ops = [{ type: 'RevokeAllSessions' }]
+      const executeArgs = buildSessionOpArgs({ accountId, ops, created_at_iso: createdAtIso })
+
+      // Borsh-serialize for challenge hash
+      const borshBytes = borshRequestMessageWithOps({
+        chain_id: 'mainnet',
+        signer_id: accountId,
+        nonce: executeArgs.msg.nonce,
+        created_at: createdAtTs,
+        timeout: 600,
+        ops,
+      })
+      const challenge = computeChallenge(borshBytes)
+
+      // Sign with passkey
+      addLog(`Revoking all ${count} session keys...`)
+      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge)
+
+      const proof = buildProof(
+        passkeySig.authenticatorData,
+        passkeySig.clientDataJSON,
+        passkeySig.signature,
+      )
+
+      executeArgs.proof = proof
+      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId)
+
+      if (result.status === 'Failure') {
+        throw new Error(`RevokeAllSessions failed: ${JSON.stringify(result).slice(0, 300)}`)
+      }
+
+      // Clear all local session keys from IndexedDB
+      for (const sessionKeyId of Object.keys(sessionKeys)) {
+        await removeSessionKey(sessionKeyId, accountId)
+      }
+      setSessionKeys(null)
+      addLog(`All ${count} session keys revoked!`)
+
+      await refreshSessionKeys(accountId)
+    } catch (err) {
+      addLog(`RevokeAllSessions ERROR: ${err.message}`)
       console.error(err)
     } finally {
       setSessionLoading(false)
@@ -1127,6 +1196,16 @@ export default function App() {
             {sessionLoading ? '...' : 'Create Session Key'}
           </button>
         </div>
+        {sessionKeys && Object.keys(sessionKeys).length > 0 && (
+          <button
+            className="btn btn-danger"
+            onClick={handleRevokeAllSessions}
+            disabled={sessionLoading}
+            style={{ width: '100%', marginTop: 8 }}
+          >
+            Revoke All Sessions (Emergency)
+          </button>
+        )}
         
         {/* Debug: Show local IndexedDB keys */}
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #333' }}>

@@ -54,4 +54,10 @@ pub enum Error {
 
     #[error("session key already exists: {0}")]
     SessionKeyAlreadyExists(String),
+
+    #[error("session TTL too long: requested {requested}s, max is {max}s")]
+    SessionTtlTooLong {
+        requested: u32,
+        max: u32,
+    },
 }

@@ -790,13 +790,21 @@ function readBeInt(data, offset, len) {
 /**
  * Generate an ed25519 keypair for session key use.
  * Uses Web Crypto API (SubtleCrypto) — available in all modern browsers.
+ *
+ * SECURITY: Private key is generated as NON-EXTRACTABLE.
+ * - Cannot be exported to raw bytes (throws on exportKey)
+ * - Can only be used for signing while in browser memory
+ * - Stored in IndexedDB as CryptoKey handle (opaque reference)
+ * - Attacker with XSS can only sign while tab is open, NOT exfiltrate the key
+ *
  * Returns { publicKey: string (NEAR base58), privateKey: CryptoKey, publicKeyBytes: Uint8Array }
  */
 export async function generateSessionKeyPair() {
-  // Generate extractable keypair so we can export and store private key
+  // Generate NON-EXTRACTABLE keypair for security
+  // Private key cannot be exported, only used for signing
   const keyPair = await crypto.subtle.generateKey(
     { name: 'Ed25519' },
-    true, // extractable — needed to export both keys
+    false, // NON-extractable — key cannot be exported to bytes/JWK
     ['sign'],
   )
 
@@ -804,13 +812,10 @@ export async function generateSessionKeyPair() {
   const publicKeyBytes = new Uint8Array(publicKeyBuffer)
   const publicKeyB58 = 'ed25519:' + base58Encode(publicKeyBytes)
 
-  // Export private key as JWK for storage (can be re-imported later)
-  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-
+  // Private key is a CryptoKey handle, cannot be exported
   return {
     publicKey: publicKeyB58,
-    privateKey: keyPair.privateKey, // CryptoKey for immediate use
-    privateKeyJwk, // JWK for storage
+    privateKey: keyPair.privateKey, // CryptoKey handle, non-extractable
     publicKeyBytes,
   }
 }
@@ -842,11 +847,11 @@ export async function getSessionKey(accountId, sessionKeyId) {
   return nearView(accountId, 'w_session_key', { session_key_id: sessionKeyId })
 }
 
-// ─── Session Key Storage (IndexedDB) ─────────────────────
+// ─── Session Key Storage (IndexedDB) ─────────────────────────
 
 const IDB_NAME = 'passkey-wallet'
 const IDB_STORE = 'session-keys'
-const IDB_VERSION = 2
+const IDB_VERSION = 3 // Bumped for CryptoKey storage format
 
 function openSessionDB() {
   return new Promise((resolve, reject) => {
@@ -864,7 +869,13 @@ function openSessionDB() {
 
 /**
  * Save a session key to IndexedDB.
- * Stores the JWK representation of the private key (IndexedDB can't store CryptoKey objects).
+ *
+ * SECURITY: Stores the CryptoKey handle directly, NOT the raw key bytes.
+ * - IndexedDB supports structured clone of CryptoKey objects
+ * - The key remains non-extractable (cannot be exported)
+ * - XSS attacker can only use it while the tab is open, cannot exfiltrate
+ *
+ * MIGRATION: Old records with `privateKeyJwk` are detected and flagged for re-creation.
  */
 export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
   const db = await openSessionDB()
@@ -874,9 +885,10 @@ export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
     tx.objectStore(IDB_STORE).put({
       sessionKeyId,
       publicKey: keyPair.publicKey,
-      privateKeyJwk: keyPair.privateKeyJwk, // JWK for storage (not CryptoKey)
+      privateKey: keyPair.privateKey, // CryptoKey handle (non-extractable)
       accountId,
       createdAt: Date.now(),
+      version: 1, // Version marker for future migrations
     }, storeKey)
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
@@ -885,7 +897,9 @@ export async function saveSessionKey(sessionKeyId, keyPair, accountId) {
 
 /**
  * Load a session key from IndexedDB.
- * Re-imports the JWK into a usable CryptoKey.
+ *
+ * Returns the stored CryptoKey handle directly (no import needed).
+ * Detects old JWK-format keys and returns null (caller must prompt re-creation).
  */
 export async function loadSessionKey(sessionKeyId, accountId) {
   const db = await openSessionDB()
@@ -899,17 +913,16 @@ export async function loadSessionKey(sessionKeyId, accountId) {
         resolve(null)
         return
       }
-      // Re-import the JWK into a CryptoKey
-      if (record.privateKeyJwk) {
-        const privateKey = await crypto.subtle.importKey(
-          'jwk',
-          record.privateKeyJwk,
-          { name: 'Ed25519' },
-          false, // non-extractable after import
-          ['sign'],
-        )
-        record.privateKey = privateKey
+
+      // MIGRATION: Detect old JWK-format keys
+      if (record.privateKeyJwk && !record.privateKey) {
+        // Old format - cannot securely use this key
+        // Return special marker to indicate migration needed
+        resolve({ ...record, needsMigration: true })
+        return
       }
+
+      // New format - CryptoKey handle directly usable
       resolve(record)
     }
     req.onerror = () => reject(req.error)
@@ -931,11 +944,12 @@ export async function removeSessionKey(sessionKeyId, accountId) {
 }
 
 /**
- * Borsh-serialize a RequestMessage with ops (for CreateSession/RevokeSession).
+ * Borsh-serialize a RequestMessage with ops (for CreateSession/RevokeSession/RevokeAllSessions).
  * The ops are serialized as borsh WalletOp variants.
  *
  * WalletOp::CreateSession { session_key_id, public_key, ttl_secs } = discriminant 3
  * WalletOp::RevokeSession { session_key_id } = discriminant 4
+ * WalletOp::RevokeAllSessions = discriminant 5
  *
  * struct RequestMessage {
  *   chain_id, signer_id, nonce, created_at, timeout,
@@ -956,6 +970,9 @@ export function borshRequestMessageWithOps(msg) {
       // Discriminant 4
       opsParts.push(new Uint8Array([4]))
       opsParts.push(borshString(op.session_key_id))
+    } else if (op.type === 'RevokeAllSessions') {
+      // Discriminant 5
+      opsParts.push(new Uint8Array([5]))
     }
   }
 
@@ -974,7 +991,7 @@ export function borshRequestMessageWithOps(msg) {
 }
 
 /**
- * Build the JSON args for w_execute_signed with a CreateSession or RevokeSession op.
+ * Build the JSON args for w_execute_signed with a CreateSession, RevokeSession, or RevokeAllSessions op.
  * This goes through the passkey auth flow (same as handleSend/handleTestSign).
  */
 export function buildSessionOpArgs({ accountId, ops, created_at_iso }) {
@@ -990,6 +1007,9 @@ export function buildSessionOpArgs({ accountId, ops, created_at_iso }) {
         ops: ops.map(op => {
           if (op.type === 'CreateSession') {
             return { op: 'create_session', session_key_id: op.session_key_id, public_key: op.public_key, ttl_secs: op.ttl_secs }
+          }
+          if (op.type === 'RevokeAllSessions') {
+            return { op: 'revoke_all_sessions' }
           }
           return { op: 'revoke_session', session_key_id: op.session_key_id }
         }),
