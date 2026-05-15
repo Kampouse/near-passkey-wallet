@@ -334,24 +334,29 @@ export async function getEthBlockNumber() {
 
 /**
  * Derive Solana address from NEAR account via MPC.
- * Solana uses Ed25519 directly - the derived public key IS the address.
- * Path: "solana" (single derivation)
+ * Solana uses Ed25519 (domain_id: 1 = FROST), NOT secp256k1 (domain_id: 0).
+ * Path: "solana" → Ed25519 public key → base58 address
  */
 export async function deriveSolAddress(nearAccountId, path = 'solana') {
-  const derivedKey = await nearView(MPC_CONTRACT, 'derived_public_key', {
+  // Ed25519 is domain 1 (FROST protocol), secp256k1 is domain 0 (CaitSith)
+  const result = await nearView(MPC_CONTRACT, 'derived_public_key', {
     path,
-    predecessor: nearAccountId,
+    predecessor: nearAccountId,  // Account context for tweak derivation (NOT predecessor_id)
+    domain_id: 1,  // 1 = Ed25519/FROST, 0 = Secp256k1/CaitSith
   })
 
-  // MPC returns "ed25519:base58..." for Solana path
-  const parts = derivedKey.split(':')
-  if (parts.length !== 2 || parts[0] !== 'ed25519') {
-    throw new Error(`Invalid Solana derived key: ${derivedKey}`)
+  // MPC returns: "ed25519:Base58..." for domain 1
+  // or "secp256k1:Base58..." for domain 0
+  const publicKey = result
+  
+  if (!publicKey || !publicKey.startsWith('ed25519:')) {
+    throw new Error(`Invalid Solana derived key (expected Ed25519, got ${publicKey}). ` +
+      `The MPC may not support Ed25519 domain. Check MPC contract version.`)
   }
 
-  // The base58 part IS the Solana address (32 bytes, Ed25519 public key)
-  const solAddress = parts[1]
-  return { derivedKey, solAddress }
+  // The base58 part IS the Solana address (32 bytes Ed25519 public key)
+  const solAddress = publicKey.replace('ed25519:', '')
+  return { derivedKey: publicKey, solAddress }
 }
 
 /**
