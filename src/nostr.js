@@ -127,6 +127,20 @@ export function encodeBech32(hrp, data) {
 }
 
 /**
+ * Convert hex pubkey to npub (bech32)
+ */
+export function pubkeyToNpub(hexPubkey) {
+  // Remove 0x prefix if present
+  const hex = hexPubkey.startsWith('0x') ? hexPubkey.slice(2) : hexPubkey
+  // Convert hex to bytes
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16)
+  }
+  return encodeBech32('npub', bytes)
+}
+
+/**
  * Decode bech32 to bytes
  */
 export function decodeBech32(str) {

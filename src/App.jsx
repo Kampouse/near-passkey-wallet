@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
 import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
 import { NostrBunkerCard } from './NostrBunker.jsx'
-import { parseNostrConnectUri } from './nostrconnect.js'
+import { parseNostrConnectUri, getOrCreateSessionKeypair, handleNostrConnectRequest, storeApprovedApp } from './nostrconnect.js'
 import {
   createPasskey,
   signWithPasskey,
@@ -688,25 +688,47 @@ export default function App() {
   
   const handleNostrConnectApprove = async () => {
     if (!nostrConnectRequest) return
-    if (!nostrPubkey) {
-      addLog('ERROR: No Nostr key derived - click "Derive Nostr Key" first')
-      setNostrConnectRequest(null)
-      return
-    }
     
     setLoading(true)
     addLog('Approving NostrConnect pairing...')
     
     try {
-      // For nostrconnect, we need to send an encrypted response to the relay
-      // This requires Ed25519 signing which uses MPC path 'nostr,1'
-      // TODO: Implement actual signing flow
+      // Get or create session keypair for signing
+      addLog('Getting Nostr session key...')
+      const { secretKey, pubkey } = getOrCreateSessionKeypair()
+      addLog(`Session pubkey: ${pubkey.slice(0, 16)}...`)
       
-      // Placeholder: show that we would approve
-      addLog(`✓ Would approve pairing with ${nostrConnectRequest.metadata?.name || nostrConnectRequest.clientPubkey.slice(0,16)}...`)
-      addLog('  (Full signing flow requires Ed25519 MPC integration)')
+      // Send encrypted ACK to relay
+      addLog('Sending encrypted response to relays...')
+      const result = await handleNostrConnectRequest({
+        clientPubkey: nostrConnectRequest.clientPubkey,
+        relays: nostrConnectRequest.relays,
+        secret: nostrConnectRequest.secret,
+        ourSecretKey: secretKey,
+        ourPubkey: pubkey,
+      })
       
-      // For now, just close the modal
+      if (result.success) {
+        addLog(`✓ Pairing successful! Event: ${result.eventId.slice(0, 16)}...`)
+        
+        // Store approved app
+        storeApprovedApp(
+          nostrConnectRequest.clientPubkey,
+          nostrConnectRequest.metadata,
+          nostrConnectRequest.perms
+        )
+        
+        // Update npub state if not already set
+        if (!npub) {
+          setNostrPubkey(pubkey)
+          // Convert to npub
+          const { pubkeyToNpub } = await import('./nostr.js')
+          setNpub(pubkeyToNpub(pubkey))
+        }
+      } else {
+        addLog('✗ Failed to publish to relays')
+      }
+      
       setNostrConnectRequest(null)
     } catch (err) {
       addLog(`ERROR: ${err.message}`)
@@ -2047,7 +2069,7 @@ export default function App() {
                 styles={{ container: { width: '100%', maxWidth: 400 } }}
               />
               <p style={{ marginTop: 16, fontSize: 13, color: '#888', textAlign: 'center' }}>
-                Point camera at a <code>passkey://</code> or <code>nostrconnect://</code> QR
+                Point camera at a <code>passkey://</code> or <code>nostrconnect://</code> QR code
               </p>
             </div>
           </div>
@@ -2095,23 +2117,21 @@ export default function App() {
                 <div style={{ fontSize: 12, color: '#888' }}>Your Nostr Key</div>
                 <div style={{ fontSize: 13, fontFamily: 'monospace', marginTop: 4 }}>
                   {npub ? `${npub.slice(0, 20)}...${npub.slice(-8)}` : (
-                    <span style={{ color: '#f87171' }}>Not derived - click "Derive Nostr Key" first</span>
+                    <span style={{ color: '#fbbf24' }}>Session key will be created on approve</span>
                   )}
                 </div>
               </div>
               
-              {!npub && (
-                <div style={{ 
-                  background: 'rgba(248,113,113,0.1)', 
-                  border: '1px solid #f87171',
-                  borderRadius: 8,
-                  padding: 12,
-                  marginBottom: 16,
-                  fontSize: 13
-                }}>
-                  ⚠️ You need to derive a Nostr key before approving.
-                </div>
-              )}
+              <div style={{ 
+                background: 'rgba(251,191,36,0.1)', 
+                border: '1px solid #fbbf24',
+                borderRadius: 8,
+                padding: 12,
+                marginBottom: 16,
+                fontSize: 13
+              }}>
+                ℹ️ A session key will be created and stored locally for signing. This is separate from your MPC-derived identity.
+              </div>
               
               <div className="row" style={{ marginTop: 24 }}>
                 <button 
@@ -2126,7 +2146,7 @@ export default function App() {
                   className="btn btn-primary" 
                   onClick={handleNostrConnectApprove}
                   style={{ flex: 1 }}
-                  disabled={loading || !npub}
+                  disabled={loading}
                 >
                   {loading ? 'Approving...' : 'Approve'}
                 </button>
