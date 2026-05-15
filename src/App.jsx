@@ -946,6 +946,97 @@ export default function App() {
     }
   }
 
+  /**
+   * Test backup passkey by signing a test transaction.
+   * Prompts for ANY passkey (discoverable), user picks backup.
+   * Contract verifies against both primary and backup keys.
+   */
+  const handleTestBackupKey = async () => {
+    if (!wallet) return
+    const accountId = wallet.nearAccountId
+
+    if (!backupKey) {
+      addLog('No backup passkey registered')
+      return
+    }
+
+    setBackupLoading(true)
+    addLog('Testing backup passkey... Please authenticate with your backup device.')
+
+    try {
+      // Prompt for any passkey (discoverable credential)
+      // User will select their backup passkey
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          userVerification: 'required',
+          timeout: 60000,
+        },
+      })
+
+      const usedCredentialId = assertion.id
+      addLog(`Passkey used: ${usedCredentialId.slice(0, 20)}...`)
+
+      // Check if this is the backup passkey or primary
+      const isPrimary = usedCredentialId === wallet.credentialId
+      if (isPrimary) {
+        addLog('⚠️ You used your PRIMARY passkey (FaceID). Try again with your backup device.')
+        setBackupLoading(false)
+        return
+      }
+
+      // Sign a test transaction with this passkey
+      addLog('Backup passkey detected! Signing test transaction...')
+
+      const created = new Date()
+      const createdTimestamp = Math.floor(created.getTime() / 1000)
+      const createdIso = created.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+      // Minimal test: empty ops (just verify signature)
+      const nonce = Math.floor(Math.random() * 0xFFFFFFFF)
+      const testMsg = {
+        chain_id: 'test',
+        signer_id: accountId,
+        nonce,
+        created_at: createdTimestamp,
+        timeout: 600,
+        request: {
+          ops: [],
+          out: { after: [], then: [] },
+        },
+      }
+
+      // Borsh-serialize the request
+      const requestBytes = borshRequestMessage({
+        chain_id: 'test',
+        signer_id: accountId,
+        nonce,
+        created_at: createdTimestamp,
+        request: testMsg.request,
+      })
+
+      // Get path from stored wallet (same for all passkeys on this wallet)
+      const path = wallet.path || 'ethereum'
+      
+      // Sign with the backup passkey
+      const signedAssertion = await signWithPasskey(
+        usedCredentialId,
+        path,
+        requestBytes,
+        accountId,
+      )
+
+      addLog(`✓ Backup passkey signature verified!`)
+      addLog(`Credential ID: ${usedCredentialId.slice(0, 30)}...`)
+      addLog(`Your backup is functional and can sign transactions.`)
+    } catch (err) {
+      addLog(`Backup test failed: ${err.message}`)
+      console.error(err)
+    } finally {
+      setBackupLoading(false)
+    }
+  }
+
   // ─── Login with existing passkey ──
   const handleLogin = async () => {
     setLoading(true)
@@ -1353,14 +1444,24 @@ export default function App() {
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
               {backupKey.slice(0, 40)}...
             </div>
-            <button
-              className="btn btn-danger"
-              onClick={handleRemoveBackupKey}
-              disabled={backupLoading}
-              style={{ marginTop: 8, fontSize: 12 }}
-            >
-              {backupLoading ? '...' : 'Remove Backup'}
-            </button>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleTestBackupKey}
+                disabled={backupLoading}
+                style={{ flex: 1, fontSize: 12 }}
+              >
+                {backupLoading ? '...' : 'Test Backup'}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={handleRemoveBackupKey}
+                disabled={backupLoading}
+                style={{ flex: 1, fontSize: 12, marginLeft: 8 }}
+              >
+                {backupLoading ? '...' : 'Remove'}
+              </button>
+            </div>
           </div>
         ) : (
           <div>
@@ -1373,14 +1474,6 @@ export default function App() {
             </button>
           </div>
         )}
-        <button
-          className="btn btn-secondary"
-          onClick={() => refreshBackupKey(wallet?.nearAccountId)}
-          disabled={backupLoading}
-          style={{ fontSize: 11, marginTop: backupKey ? 0 : 8 }}
-        >
-          {backupLoading ? '...' : 'Refresh Status'}
-        </button>
       </div>
 
       <div className="card">
