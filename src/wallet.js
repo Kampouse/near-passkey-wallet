@@ -17,7 +17,11 @@ export const MPC_CONTRACT = 'v1.signer-prod.testnet'
 export const WALLET_CONTRACT = 'pwallet1.testnet'
 export const FACTORY_CONTRACT = 'pwallet-v2.kampy.testnet'
 export const ETH_RPC = 'https://ethereum-rpc.publicnode.com'
-export const SOL_RPC = 'https://api.mainnet-beta.solana.com'
+// Solana RPC - use public RPCs that allow browser CORS
+// Note: api.mainnet-beta.solana.com blocks browser requests (403)
+// Using CORS-friendly alternatives:
+export const SOL_RPC = 'https://solana-api.projectserum.com'  // Serum DEX RPC (CORS-friendly)
+// Alternative: 'https://ssc-dao.genesysgo.net' (GenesysGo)
 export const RELAY_URL = 'https://near-wallet-relay.kj95hgdgnn.workers.dev'
 
 const CHAIN_ID = 'mainnet' // hardcoded in contract utils.rs
