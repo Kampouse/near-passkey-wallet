@@ -18,7 +18,7 @@ const NIP46_RELAYS = [
   'wss://relay.damus.io',
 ]
 
-export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading }) {
+export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading, bunker, onStartBunker, onStopBunker }) {
   const [showBunkerQr, setShowBunkerQr] = useState(false)
 
   return (
@@ -27,7 +27,7 @@ export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading }
         <div className="card-icon" style={{ background: 'linear-gradient(135deg, #8b5cf6, #6d28d9)' }}>⚡</div>
         <div>
           <div className="card-title">Nostr Identity</div>
-          <div className="card-subtitle">{npub ? 'Sign with FaceID' : 'Derive your npub'}</div>
+          <div className="card-subtitle">{npub ? 'Sign with FaceID' : 'Create session key'}</div>
         </div>
       </div>
       {npub ? (
@@ -38,6 +38,17 @@ export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading }
           <div style={{ fontSize: 11, color: '#888', marginBottom: 12 }}>
             Pubkey: {nostrPubkey?.slice(0, 16)}...
           </div>
+          
+          {bunker ? (
+            <button className="btn btn-secondary btn-full" onClick={onStopBunker} style={{ marginBottom: 8 }}>
+              Stop Listening
+            </button>
+          ) : (
+            <button className="btn btn-primary btn-full" onClick={onStartBunker} disabled={loading} style={{ marginBottom: 8 }}>
+              {loading ? 'Starting...' : 'Start Bunker'}
+            </button>
+          )}
+          
           <button className="btn btn-secondary btn-full" onClick={() => setShowBunkerQr(true)}>
             Show Bunker QR
           </button>
@@ -52,7 +63,7 @@ export function NostrBunkerCard({ wallet, onDerive, npub, nostrPubkey, loading }
         </div>
       ) : (
         <button className="btn btn-primary btn-full" onClick={onDerive} disabled={loading}>
-          {loading ? 'Deriving...' : 'Derive Nostr Key'}
+          {loading ? 'Creating...' : 'Create Nostr Key'}
         </button>
       )}
     </div>

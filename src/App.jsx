@@ -3,6 +3,8 @@ import { Scanner } from '@yudiel/react-qr-scanner'
 import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
 import { NostrBunkerCard } from './NostrBunker.jsx'
 import { parseNostrConnectUri, getOrCreateSessionKeypair, handleNostrConnectRequest, storeApprovedApp } from './nostrconnect.js'
+import { Nip46Bunker } from './nip46.js'
+import { pubkeyToNpub } from './nostr.js'
 import {
   createPasskey,
   signWithPasskey,
@@ -76,6 +78,8 @@ export default function App() {
   const [nostrPubkey, setNostrPubkey] = useState(null) // hex pubkey
   const [npub, setNpub] = useState(null) // bech32 npub
   const [nostrConnectRequest, setNostrConnectRequest] = useState(null) // pending nostrconnect pairing request
+  const [nostrSignRequest, setNostrSignRequest] = useState(null) // pending sign request from connected app
+  const [bunker, setBunker] = useState(null) // NIP-46 bunker instance
   const [loading, setLoading] = useState(false)
 
   // Name form
@@ -742,8 +746,89 @@ export default function App() {
     setNostrConnectRequest(null)
     addLog('NostrConnect pairing denied')
   }
+  
+  // ─── NIP-46 Bunker Management ──
+  const startBunker = async () => {
+    if (bunker) {
+      addLog('Bunker already running')
+      return
+    }
+    
+    // Need a session key for signing
+    const { secretKey, pubkey } = getOrCreateSessionKeypair()
+    
+    if (!npub) {
+      setNostrPubkey(pubkey)
+      setNpub(pubkeyToNpub(pubkey))
+    }
+    
+    addLog('Starting NIP-46 bunker...')
+    
+    const newBunker = new Nip46Bunker({
+      relays: ['wss://relay.primal.net', 'wss://nos.lol'],
+      pubkey: pubkey,
+      npub: pubkeyToNpub(pubkey),
+      onRequest: (request) => {
+        // Show approval modal
+        setNostrSignRequest(request)
+      },
+      signFn: async (messageHash) => {
+        // For now, use the session key to sign
+        // TODO: Use MPC Ed25519 signing (path: 'nostr,1')
+        const { finalizeEvent } = await import('nostr-tools/pure')
+        // The signFn for NIP-46 should return hex signature
+        // For Ed25519, we'd need MPC call here
+        throw new Error('MPC signing not yet implemented for Nostr')
+      }
+    })
+    
+    await newBunker.start()
+    setBunker(newBunker)
+    addLog(`✓ Bunker listening on relays`)
+  }
+  
+  const stopBunker = () => {
+    if (bunker) {
+      bunker.stop()
+      setBunker(null)
+      addLog('Bunker stopped')
+    }
+  }
+  
+  // Sign request approval modal handlers
+  const handleSignApprove = async () => {
+    if (!nostrSignRequest) return
+    setLoading(true)
+    addLog(`Approving sign request: ${nostrSignRequest.method}`)
+    
+    try {
+      // Use session key to sign
+      const { secretKey } = getOrCreateSessionKeypair()
+      await bunker.approveRequest(nostrSignRequest.id, secretKey)
+      addLog('✓ Request approved')
+    } catch (err) {
+      addLog(`ERROR: ${err.message}`)
+    } finally {
+      setLoading(false)
+      setNostrSignRequest(null)
+    }
+  }
+  
+  const handleSignDeny = () => {
+    if (!nostrSignRequest) return
+    if (bunker) {
+      bunker.denyRequest(nostrSignRequest.id)
+    }
+    setNostrSignRequest(null)
+    addLog('Sign request denied')
+  }
 
   const handleLogout = () => {
+    // Stop bunker on logout
+    if (bunker) {
+      bunker.stop()
+      setBunker(null)
+    }
     clearWalletState()
     setWallet(null)
     setEthBalance(null)
@@ -2156,6 +2241,60 @@ export default function App() {
         </div>
       )}
 
+      {/* Sign Request Approval Modal */}
+      {nostrSignRequest && (
+        <div className="modal-overlay">
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>🔐 Nostr Sign Request</h3>
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#888' }}>Method</div>
+                <div style={{ fontWeight: 600, fontSize: 16 }}>
+                  {nostrSignRequest.method}
+                </div>
+              </div>
+              
+              {nostrSignRequest.params?.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: '#888' }}>Parameters</div>
+                  <div style={{ fontSize: 12, fontFamily: 'monospace', marginTop: 4, wordBreak: 'break-all', maxHeight: 100, overflow: 'auto' }}>
+                    {JSON.stringify(nostrSignRequest.params, null, 2)}
+                  </div>
+                </div>
+              )}
+              
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#888' }}>From</div>
+                <div style={{ fontSize: 13, fontFamily: 'monospace', marginTop: 4 }}>
+                  {nostrSignRequest.clientPubkey?.slice(0, 16)}...
+                </div>
+              </div>
+              
+              <div className="row" style={{ marginTop: 24 }}>
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={handleSignDeny}
+                  style={{ flex: 1 }}
+                  disabled={loading}
+                >
+                  Deny
+                </button>
+                <button 
+                  className="btn btn-primary" 
+                  onClick={handleSignApprove}
+                  style={{ flex: 1 }}
+                  disabled={loading}
+                >
+                  {loading ? 'Signing...' : 'Approve'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="dashboard-grid">
         <div className="card">
           <div className="card-header">
@@ -2317,6 +2456,9 @@ export default function App() {
           npub={npub}
           nostrPubkey={nostrPubkey}
           loading={loading}
+          bunker={bunker}
+          onStartBunker={startBunker}
+          onStopBunker={stopBunker}
         />
 
         <div className="card">

@@ -36,6 +36,7 @@ export class Nip46Bunker {
     this.pool = null
     this.subscription = null
     this.sessionKeys = new Map() // clientPubkey -> sharedKey
+    this.pendingRequests = new Map() // requestId -> { resolve, reject }
   }
 
   /**
@@ -109,23 +110,51 @@ export class Nip46Bunker {
       const { method, params, id } = this.parseRequest(decrypted)
       console.log('[NIP-46] Method:', method, 'params:', params)
       
+      // Get client pubkey from event
+      const clientPubkey = event.pubkey
+      
+      // Create pending request and wait for approval
+      const requestId = `${event.id}-${Date.now()}`
+      const requestPromise = new Promise((resolve, reject) => {
+        this.pendingRequests.set(requestId, { resolve, reject })
+      })
+      
+      // Show approval UI
+      if (this.onRequest) {
+        this.onRequest({
+          id: requestId,
+          method,
+          params,
+          clientPubkey,
+          event,
+        })
+      }
+      
+      // Wait for user approval
+      const approved = await requestPromise
+      
+      if (!approved) {
+        await this.sendErrorResponse(event, 'Request denied by user')
+        return
+      }
+      
       // Handle different methods
       let result
       switch (method) {
         case 'connect':
-          result = await this.handleConnect(event.pubkey, params)
+          result = await this.handleConnect(clientPubkey, params)
           break
         case 'get_public_key':
           result = this.pubkey
           break
         case 'sign_event':
-          result = await this.handleSignEvent(event.pubkey, params)
+          result = await this.handleSignEvent(clientPubkey, params)
           break
         case 'nip44_encrypt':
-          result = await this.handleNip44Encrypt(event.pubkey, params)
+          result = await this.handleNip44Encrypt(clientPubkey, params)
           break
         case 'nip44_decrypt':
-          result = await this.handleNip44Decrypt(event.pubkey, params)
+          result = await this.handleNip44Decrypt(clientPubkey, params)
           break
         case 'ping':
           result = 'pong'
@@ -141,6 +170,28 @@ export class Nip46Bunker {
       console.error('[NIP-46] Error handling event:', err)
       // Send error response
       await this.sendErrorResponse(event, err.message)
+    }
+  }
+  
+  /**
+   * Approve a pending request (called from UI)
+   */
+  approveRequest(requestId) {
+    const pending = this.pendingRequests.get(requestId)
+    if (pending) {
+      pending.resolve(true)
+      this.pendingRequests.delete(requestId)
+    }
+  }
+  
+  /**
+   * Deny a pending request (called from UI)
+   */
+  denyRequest(requestId) {
+    const pending = this.pendingRequests.get(requestId)
+    if (pending) {
+      pending.resolve(false)
+      this.pendingRequests.delete(requestId)
     }
   }
 
@@ -165,19 +216,6 @@ export class Nip46Bunker {
     // Store session
     const secret = params[1] // optional secret
     this.sessionKeys.set(clientPubkey, { secret })
-    
-    // Request approval from user
-    if (this.onRequest) {
-      const approved = await this.onRequest({
-        method: 'connect',
-        client: clientPubkey,
-        message: 'App wants to connect to your wallet',
-      })
-      if (!approved) {
-        throw new Error('Connection denied')
-      }
-    }
-    
     return 'ack'
   }
 
@@ -186,20 +224,6 @@ export class Nip46Bunker {
    */
   async handleSignEvent(clientPubkey, params) {
     const eventJson = JSON.parse(params[0])
-    
-    // Request approval from user
-    if (this.onRequest) {
-      const approved = await this.onRequest({
-        method: 'sign_event',
-        client: clientPubkey,
-        kind: eventJson.kind,
-        content: eventJson.content?.slice(0, 100),
-        message: `Sign ${this.getEventTypeName(eventJson.kind)}?`,
-      })
-      if (!approved) {
-        throw new Error('Signing denied')
-      }
-    }
     
     // Compute event ID
     const eventId = await this.computeEventId(eventJson)
