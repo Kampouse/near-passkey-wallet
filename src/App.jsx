@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
 import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
+import { NostrBunkerCard } from './NostrBunker.jsx'
 import {
   createPasskey,
   signWithPasskey,
@@ -638,10 +639,37 @@ export default function App() {
     }
   }
 
+  // ─── Nostr Derivation ──
+  const handleDeriveNostr = async () => {
+    if (!wallet?.nearAccountId) {
+      addLog('ERROR: No wallet loaded')
+      return
+    }
+    setLoading(true)
+    addLog('Deriving Nostr key...')
+    try {
+      const result = await deriveNostrAddress(wallet.nearAccountId)
+      if (result.error) {
+        addLog(`ERROR: ${result.error}`)
+      } else {
+        setNostrPubkey(result.nostrPubkey)
+        setNpub(result.npub)
+        addLog(`✓ Nostr key derived: ${result.npub.slice(0, 20)}...`)
+      }
+    } catch (err) {
+      addLog(`ERROR: ${err.message}`)
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleLogout = () => {
     clearWalletState()
     setWallet(null)
     setEthBalance(null)
+    setNpub(null)
+    setNostrPubkey(null)
     setScreen(SCREENS.WELCOME)
     setLog([])
     setSessionKeys(null)
@@ -2116,6 +2144,14 @@ export default function App() {
             </button>
           )}
         </div>
+
+        <NostrBunkerCard 
+          wallet={wallet}
+          onDerive={handleDeriveNostr}
+          npub={npub}
+          nostrPubkey={nostrPubkey}
+          loading={loading}
+        />
 
         <div className="card">
           <div className="card-header">
