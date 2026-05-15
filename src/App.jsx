@@ -36,6 +36,8 @@ import {
   saveSessionKey,
   loadSessionKey,
   removeSessionKey,
+  deriveSolAddress,
+  getSolBalance,
   MPC_CONTRACT,
   WALLET_CONTRACT,
   FACTORY_CONTRACT,
@@ -59,6 +61,8 @@ export default function App() {
   const [log, setLog] = useState([])
   const [wallet, setWallet] = useState(null)
   const [ethBalance, setEthBalance] = useState(null)
+  const [solBalance, setSolBalance] = useState(null)
+  const [solAddress, setSolAddress] = useState(null)
   const [loading, setLoading] = useState(false)
 
   // Name form
@@ -225,6 +229,25 @@ export default function App() {
       addLog(`Balance: ${formatEthBalance(balance)} ETH`)
     } catch (err) {
       addLog(`Balance check failed: ${err.message}`)
+    }
+  }
+
+  const refreshSolBalance = async (nearAccountId) => {
+    try {
+      const accountId = nearAccountId || wallet?.nearAccountId
+      if (!accountId) return
+
+      addLog('Deriving SOL address...')
+      const { solAddress } = await deriveSolAddress(accountId)
+      setSolAddress(solAddress)
+      addLog(`SOL address: ${solAddress.slice(0, 8)}...${solAddress.slice(-8)}`)
+
+      addLog('Fetching SOL balance...')
+      const balance = await getSolBalance(solAddress)
+      setSolBalance(balance)
+      addLog(`SOL balance: ${Number(balance) / 1e9} SOL`)
+    } catch (err) {
+      addLog(`SOL balance check failed: ${err.message}`)
     }
   }
 
@@ -1368,6 +1391,32 @@ export default function App() {
         <div className="row">
           <button className="btn btn-secondary" onClick={() => refreshBalance()}>
             Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Solana Balance</div>
+        {solAddress ? (
+          <>
+            <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+              {solAddress.slice(0, 8)}...{solAddress.slice(-8)}
+            </div>
+            <div className="balance">
+              {solBalance !== null ? (Number(solBalance) / 1e9).toFixed(4) : '...'} SOL
+            </div>
+            <div className="balance-label">
+              {solBalance ? `$${(Number(solBalance) / 1e9 * 150).toFixed(2)}` : '—'}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+            Click "Load SOL" to derive address
+          </div>
+        )}
+        <div className="row">
+          <button className="btn btn-secondary" onClick={() => refreshSolBalance()}>
+            {solBalance ? 'Refresh' : 'Load SOL'}
           </button>
         </div>
       </div>

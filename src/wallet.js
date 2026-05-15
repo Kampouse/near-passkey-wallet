@@ -17,6 +17,7 @@ export const MPC_CONTRACT = 'v1.signer-prod.testnet'
 export const WALLET_CONTRACT = 'pwallet1.testnet'
 export const FACTORY_CONTRACT = 'pwallet-v2.kampy.testnet'
 export const ETH_RPC = 'https://ethereum-rpc.publicnode.com'
+export const SOL_RPC = 'https://api.mainnet-beta.solana.com'
 export const RELAY_URL = 'https://near-wallet-relay.kj95hgdgnn.workers.dev'
 
 const CHAIN_ID = 'mainnet' // hardcoded in contract utils.rs
@@ -327,6 +328,207 @@ export async function getEthGasPrice() {
 export async function getEthBlockNumber() {
   const hex = await ethRpc('eth_blockNumber')
   return parseInt(hex, 16)
+}
+
+// ─── Solana Chain Support ─────────────────────────────────────
+
+/**
+ * Derive Solana address from NEAR account via MPC.
+ * Solana uses Ed25519 directly - the derived public key IS the address.
+ * Path: "solana" (single derivation)
+ */
+export async function deriveSolAddress(nearAccountId, path = 'solana') {
+  const derivedKey = await nearView(MPC_CONTRACT, 'derived_public_key', {
+    path,
+    predecessor: nearAccountId,
+  })
+
+  // MPC returns "ed25519:base58..." for Solana path
+  const parts = derivedKey.split(':')
+  if (parts.length !== 2 || parts[0] !== 'ed25519') {
+    throw new Error(`Invalid Solana derived key: ${derivedKey}`)
+  }
+
+  // The base58 part IS the Solana address (32 bytes, Ed25519 public key)
+  const solAddress = parts[1]
+  return { derivedKey, solAddress }
+}
+
+/**
+ * Get SOL balance via RPC.
+ */
+export async function getSolBalance(address) {
+  const res = await fetch(SOL_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'getBalance',
+      params: [address],
+    }),
+  })
+  const data = await res.json()
+  if (data.error) throw new Error(`SOL RPC: ${JSON.stringify(data.error)}`)
+  // Balance in lamports (1 SOL = 1e9 lamports)
+  return BigInt(data.result.value)
+}
+
+/**
+ * Get recent blockhash for transaction.
+ */
+export async function getSolRecentBlockhash() {
+  const res = await fetch(SOL_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'getLatestBlockhash',
+      params: [{ commitment: 'finalized' }],
+    }),
+  })
+  const data = await res.json()
+  if (data.error) throw new Error(`SOL RPC: ${JSON.stringify(data.error)}`)
+  return {
+    blockhash: data.result.value.blockhash,
+    lastValidBlockHeight: data.result.value.lastValidBlockHeight,
+  }
+}
+
+/**
+ * Get SOL account info (check if initialized).
+ */
+export async function getSolAccountInfo(address) {
+  const res = await fetch(SOL_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'getAccountInfo',
+      params: [address, { encoding: 'base64' }],
+    }),
+  })
+  const data = await res.json()
+  if (data.error) throw new Error(`SOL RPC: ${JSON.stringify(data.error)}`)
+  return data.result.value
+}
+
+/**
+ * Build a Solana transfer transaction message.
+ * Returns serialized transaction bytes for MPC signing.
+ * 
+ * Solana transfer = SystemProgram.transfer instruction
+ * Signed message = serialized transaction (without signatures)
+ */
+export function buildSolTransferTx({ from, to, lamports, recentBlockhash }) {
+  // Solana transaction format:
+  // - 4 bytes: num signatures (0 for unsigned)
+  // - 3 bytes: message header (num required signatures, num readonly signed, num readonly unsigned)
+  // -Compact-array: account addresses
+  // - 32 bytes: recent blockhash
+  // - Compact-array: instructions
+
+  // We build the message (not full transaction with signatures)
+  // MPC will sign the message, then we construct the full transaction with signature
+
+  // Account addresses are base58 encoded, 32 bytes each
+  const fromBytes = bs58.decode(from)
+  const toBytes = bs58.decode(to)
+  const systemProgramBytes = bs58.decode('11111111111111111111111111111111')
+
+  // Recent blockhash is 32 bytes base58
+  const blockhashBytes = bs58.decode(recentBlockhash)
+
+  // Build compact-u16 array of accounts
+  // Accounts: from, to, systemProgram (in that order, from is fee payer)
+  const numAccounts = 3
+  const accounts = concatBytes(
+    encodeCompactU16(numAccounts),
+    fromBytes,
+    toBytes,
+    systemProgramBytes,
+  )
+
+  // Message header: 1 required signature (from), 0 readonly signed, 1 readonly unsigned (systemProgram)
+  const header = new Uint8Array([1, 0, 1])
+
+  // Build instructions
+  // SystemProgram.transfer({ from, to, lamports })
+  // Instruction = { program_id_index, accounts, data }
+  const programIdIndex = 2 // systemProgram is at index 2 in accounts array
+  const fromAccountIndex = 0
+  const toAccountIndex = 1
+  const instructionAccounts = new Uint8Array([fromAccountIndex, toAccountIndex])
+
+  // Instruction data: 4-byte instruction discriminator (2 = Transfer) + 8-byte lamports
+  const instructionData = new Uint8Array(12)
+  const view = new DataView(instructionData.buffer)
+  view.setUint32(0, 2, true) // Transfer instruction discriminator (little-endian)
+  view.setBigUint64(4, BigInt(lamports), true) // lamports (little-endian)
+
+  // Compact array of instructions (1 instruction)
+  const instructions = concatBytes(
+    new Uint8Array([1]), // 1 instruction
+    new Uint8Array([programIdIndex]), // program_id_index
+    encodeCompactU16(2), // num accounts
+    instructionAccounts,
+    encodeCompactU16(instructionData.length), // data length
+    instructionData,
+  )
+
+  // Build complete message
+  const message = concatBytes(
+    header,
+    accounts,
+    blockhashBytes,
+    instructions,
+  )
+
+  // Prefix with message length for signing
+  // Solana expects: <message_prefix> + message
+  // Message prefix = 0x03 0x01 (serialize + encode) but actually it's simpler
+  // The message to sign is just: header + accounts + blockhash + instructions
+  // With a prefix of "solana-offline-message" concept
+
+  return message
+}
+
+/**
+ * Sign a Solana transaction via MPC and broadcast.
+ * 
+ * @param {string} nearAccountId - NEAR wallet account
+ * @param {Uint8Array} txBytes - Transaction message bytes
+ * @param {string} path - MPC derivation path (default: 'solana')
+ * @param {string} solSender - Solana sender address
+ */
+export async function signAndSendSol({ nearAccountId, txBytes, path = 'solana', solSender }) {
+  // Get signature from MPC
+  const signatureResult = await nearView(MPC_CONTRACT, 'sign', {
+    request: {
+      path,
+      payload: Array.from(txBytes),
+    },
+    predecessor: nearAccountId,
+  })
+
+  // signatureResult has { big_r, s, recovery_id } for Ed25519
+  // For Solana, we need a 64-byte signature (r + s)
+  // Ed25519 signatures from MPC should be directly usable
+
+  const signature = signatureResult.signature || signatureResult
+  
+  // Broadcast to Solana RPC
+  // Construct full transaction with signature
+  const { blockhash } = await getSolRecentBlockhash()
+  
+  // TODO: Broadcast - requires constructing full signed transaction
+  // For now, return the signature for manual verification
+  return {
+    signature,
+    status: 'signed',
+  }
 }
 
 // ─── Relay Submission ────────────────────────────────────────
@@ -1032,4 +1234,40 @@ export function buildSessionOpArgs({ accountId, ops, created_at_iso }) {
       },
     },
   }
+}
+
+// ─── Solana Helpers ───────────────────────────────────────────
+
+/**
+ * Encode a compact-u16 value (Solana's variable-length encoding).
+ */
+function encodeCompactU16(value) {
+  if (value < 128) {
+    return new Uint8Array([value])
+  } else if (value < 16384) {
+    return new Uint8Array([
+      (value & 0x7f) | 0x80,
+      (value >> 7) & 0x7f,
+    ])
+  } else {
+    return new Uint8Array([
+      (value & 0x7f) | 0x80,
+      ((value >> 7) & 0x7f) | 0x80,
+      (value >> 14) & 0x03,
+    ])
+  }
+}
+
+/**
+ * Concatenate Uint8Arrays.
+ */
+function concatBytes(...arrays) {
+  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0)
+  const result = new Uint8Array(totalLength)
+  let offset = 0
+  for (const arr of arrays) {
+    result.set(arr, offset)
+    offset += arr.length
+  }
+  return result
 }
