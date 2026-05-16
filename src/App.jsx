@@ -2,9 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { Scanner } from '@yudiel/react-qr-scanner'
 import { parsePaymentQr, notifyCallback, isPasskeyQr } from '@passkey/sdk'
 import { NostrBunkerCard } from './NostrBunker.jsx'
-import { parseNostrConnectUri, getOrCreateSessionKeypair, handleNostrConnectRequest, storeApprovedApp } from './nostrconnect.js'
-import { Nip46Bunker } from './nip46.js'
-import { pubkeyToNpub } from './nostr.js'
+import { parseNostrConnectUri, getOrCreateSessionKeypair, handleNostrConnectRequest, storeApprovedApp, Nip46Bunker } from './nostr'
+import { pubkeyToNpub } from './nostr-utils.js'
 import {
   createPasskey,
   signWithPasskey,
@@ -711,6 +710,7 @@ export default function App() {
         secret: nostrConnectRequest.secret,
         ourSecretKey: secretKey,
         ourPubkey: pubkey,
+        addLog, // Pass addLog so UI shows TRACE lines
       })
       
       if (result.success) {
@@ -727,7 +727,7 @@ export default function App() {
         if (!npub) {
           setNostrPubkey(pubkey)
           // Convert to npub
-          const { pubkeyToNpub } = await import('./nostr.js')
+          const { pubkeyToNpub } = await import('./nostr-utils.js')
           setNpub(pubkeyToNpub(pubkey))
         }
         
@@ -764,9 +764,11 @@ export default function App() {
   
   // ─── NIP-46 Bunker Management ──
   const startBunker = async (relays) => {
+    addLog(`startBunker called, bunker=${bunker ? 'exists' : 'null'}`)
     if (bunker) {
-      addLog('Bunker already running')
-      return
+      addLog('Bunker already running, stopping and restarting...')
+      bunker.stop()
+      setBunker(null)
     }
     
     try {

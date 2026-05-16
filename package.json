@@ -14,7 +14,6 @@
     "deploy:frontend": "npm run build && npx wrangler pages deploy dist --project-name=near-passkey-wallet"
   },
   "dependencies": {
-    "@noble/hashes": "^2.2.0",
     "@passkey/sdk": "*",
     "@yudiel/react-qr-scanner": "^2.6.0",
     "bn.js": "^5.2.0",
@@ -25,6 +24,8 @@
     "qrcode.react": "^4.2.0"
   },
   "devDependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
     "@vitejs/plugin-react": "^4.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
