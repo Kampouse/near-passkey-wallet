@@ -344,13 +344,28 @@ impl Contract {
         let expires_at = now.saturating_add(ttl_secs as u64 * 1_000_000_000);
 
         self.session_keys.insert(
-            session_key_id,
+            session_key_id.clone(),
             SessionKey {
                 public_key,
                 created_at: now,
                 expires_at,
             },
         );
+
+        // Add the session key as a real NEAR FunctionCall access key
+        if let Some(pk_bytes) = decode_near_ed25519_public_key(
+            &self.session_keys.get(&session_key_id).unwrap().public_key,
+        ) {
+            let pk = near_sdk::PublicKey::from_parts(near_sdk::CurveType::ED25519, pk_bytes.to_vec())
+                .expect("valid ed25519 public key");
+            let receiver_id = env::current_account_id();
+            near_sdk::Promise::new(env::current_account_id()).add_access_key_allowance(
+                pk,
+                near_sdk::Allowance::unlimited(),
+                receiver_id,
+                "w_execute_session",
+            );
+        }
 
         Ok(())
     }

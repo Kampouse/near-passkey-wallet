@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Passkey Wallet — Connect</title>
+  <style>
+    :root { --bg:#0a0a0a; --card:rgba(255,255,255,0.05); --border:rgba(255,255,255,0.1); --text:#fff; --dim:#888; --accent:#10b981; --danger:#ef4444; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; }
+    .c { width:100%; max-width:360px; text-align:center; }
+    .logo { width:56px; height:56px; background:linear-gradient(135deg,#10b981,#059669); border-radius:16px; display:flex; align-items:center; justify-content:center; margin:0 auto 16px; font-size:24px; }
+    h1 { font-size:20px; font-weight:600; margin-bottom:6px; }
+    .sub { font-size:14px; color:var(--dim); margin-bottom:24px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:16px; text-align:left; }
+    .label { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+    .val { font-size:14px; word-break:break-all; }
+    .qr { background:#fff; padding:16px; border-radius:16px; display:inline-block; margin:16px 0; }
+    .qr img { display:block; }
+    .btn { width:100%; padding:14px; border:none; border-radius:12px; font-size:16px; font-weight:600; cursor:pointer; margin-bottom:8px; }
+    .btn-go { background:var(--accent); color:#fff; }
+    .btn-no { background:transparent; color:var(--danger); border:1px solid rgba(239,68,68,0.3); }
+    .wait { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); margin-top:16px; justify-content:center; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--accent); animation:p 2s infinite; }
+    @keyframes p { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .err { color:var(--danger); }
+    .hid { display:none; }
+  </style>
+</head>
+<body>
+  <div class="c">
+    <div class="logo">🔐</div>
+
+    <!-- QR scanning phase -->
+    <div id="s-qr">
+      <h1>Scan to Connect</h1>
+      <div class="sub">Open Passkey Wallet and scan this QR code</div>
+      <div class="card">
+        <div class="label">Requesting App</div>
+        <div class="val" id="dapp">Loading...</div>
+      </div>
+      <div class="qr"><img id="qr-img" src="" alt="QR" width="200" height="200"></div>
+      <div class="wait"><span class="dot"></span>Waiting for wallet scan...</div>
+    </div>
+
+    <!-- Done -->
+    <div id="s-done" class="hid">
+      <div style="font-size:48px;margin-bottom:16px">✅</div>
+      <h1>Connected!</h1>
+      <div class="sub" id="done-text">Account: —</div>
+    </div>
+
+    <!-- Error -->
+    <div id="s-err" class="hid">
+      <div style="font-size:48px;margin-bottom:16px">❌</div>
+      <h1 class="err">Error</h1>
+      <div class="sub err" id="err-text">Something went wrong</div>
+      <button class="btn btn-no" onclick="window.close()">Close</button>
+    </div>
+  </div>
+
+  <script>
+    var qs = new URLSearchParams(location.search);
+    var RELAY = qs.get("relay");
+    var METHOD = qs.get("method") || "signIn";
+    var DAPP = qs.get("dapp") || "Unknown dApp";
+    var NETWORK = qs.get("network") || "testnet";
+    var RECEIVER = qs.get("receiverId");
+
+    var sessionId;
+
+    function show(id) {
+      ["s-qr","s-done","s-err"].forEach(function(s) {
+        document.getElementById(s).classList.toggle("hid", s !== id);
+      });
+    }
+
+    function send(result) {
+      // Post to opener (the dApp page — parent forwards to iframe)
+      try { window.opener.postMessage({ type:"pw-response", result:result }, "*"); } catch(e) {}
+    }
+
+    function sendErr(msg) {
+      try { window.opener.postMessage({ type:"pw-response", error:msg }, "*"); } catch(e) {}
+    }
+
+    function api(path, opts) {
+      return fetch(RELAY + path, opts).then(function(r) { return r.json(); });
+    }
+
+    function init() {
+      if (!RELAY) {
+        document.getElementById("err-text").textContent = "Missing relay URL";
+        show("s-err");
+        return;
+      }
+
+      document.getElementById("dapp").textContent = DAPP;
+
+      // 1. Create session
+      api("/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: DAPP }),
+      }).then(function(session) {
+        sessionId = session.sessionId;
+
+        // 2. Generate QR
+        var uri = "nearpasskey://connect?relay=" + encodeURIComponent(RELAY) + "&session=" + sessionId;
+        document.getElementById("qr-img").src =
+          "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(uri);
+
+        // 3. Post request to relay
+        var req = { type: METHOD, network: NETWORK };
+        if (RECEIVER) req.receiverId = RECEIVER;
+
+        return api("/v1/session/" + sessionId + "/request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(req),
+        });
+      }).then(function() {
+        // 4. Poll for wallet response
+        var start = Date.now();
+        var timer = setInterval(function() {
+          if (Date.now() - start > 300000) {
+            clearInterval(timer);
+            sendErr("Timed out");
+            document.getElementById("err-text").textContent = "Session timed out";
+            show("s-err");
+            return;
+          }
+
+          api("/v1/session/" + sessionId + "/response?wait=20").then(function(resp) {
+            if (!resp) return;
+            clearInterval(timer);
+
+            // 5. Forward to dApp iframe
+            if (resp.rejected) {
+              sendErr("User rejected");
+              document.getElementById("err-text").textContent = "Rejected by user";
+              show("s-err");
+            } else {
+              send(resp);
+              document.getElementById("done-text").textContent = "Account: " + (resp.accountId || "Connected");
+              show("s-done");
+              setTimeout(function() { window.close(); }, 2000);
+            }
+          }).catch(function() {});
+        }, 2500);
+      }).catch(function(err) {
+        sendErr(err.message);
+        document.getElementById("err-text").textContent = err.message;
+        show("s-err");
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>

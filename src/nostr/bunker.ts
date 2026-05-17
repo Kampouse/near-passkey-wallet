@@ -11,7 +11,6 @@ import { finalizeEvent } from 'nostr-tools/pure'
 // @ts-ignore
 import { SimplePool } from 'nostr-tools/pool'
 import { KIND_BUNKER, DEFAULT_RELAYS, AUTO_APPROVE_METHODS, type BunkerOptions, type Nip46Event, type PendingRequest, type HexPubkey, type SecretKey } from './types'
-import { generateId, toHex } from './crypto'
 
 type PendingCallback = {
   resolve: (approved: boolean) => void
@@ -224,7 +223,7 @@ export class Nip46Bunker {
   /**
    * Handle NIP-46 method
    */
-  async handleMethod(method: string, params: string[], clientPubkey: HexPubkey): Promise<string> {
+  async handleMethod(method: string, params: string[], _clientPubkey: HexPubkey): Promise<string> {
     switch (method) {
       case 'get_public_key':
         return this.pubkey

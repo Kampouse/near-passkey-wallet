@@ -1,0 +1,12 @@
+export const NEAR_RPC = 'https://rpc.testnet.near.org';
+export const MPC_CONTRACT = 'v1.signer-prod.testnet';
+export const WALLET_CONTRACT = 'pwallet1.testnet';
+export const FACTORY_CONTRACT = 'pwallet-v2.kampy.testnet';
+export const ETH_RPC = 'https://ethereum-rpc.publicnode.com';
+export const BASE_RPC = 'https://base-rpc.publicnode.com';
+export const SOL_RPC = 'https://api.devnet.solana.com';
+export const RELAY_URL = 'https://near-wallet-relay.kj95hgdgnn.workers.dev';
+export const CHAIN_ID = 'mainnet';
+export const WALLET_DOMAIN = 'NEAR_WALLET_CONTRACT/V1';
+export const STORAGE_KEY = 'passkey-wallet-state';
+export const CRED_MAP_KEY = 'passkey-cred-map';

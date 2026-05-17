@@ -6,7 +6,6 @@
  */
 
 import { getPublicKey } from 'nostr-tools/pure'
-import { toHex } from './crypto'
 import type { SessionKeypair, HexPubkey, ApprovedApp } from './types'
 
 const STORAGE_KEY = 'nostr_session_key'

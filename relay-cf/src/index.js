@@ -1,6 +1,7 @@
 // near-wallet-relay: CF Worker — relays signed txs to NEAR + creates wallets
 import { etc, getPublicKey, sign } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+import { Account } from 'near-api-js';
 etc.sha512Sync = (...m) => sha512(etc.concatBytes(...m));
 
 const DEFAULT_GAS = 300_000_000_000_000n;
@@ -75,8 +76,13 @@ function buildTx(signerId, pubKeyBytes, nonce, blockHash, receiverId, methodName
 }
 
 function buildDeployTx(signerId, pubKeyBytes, nonce, blockHash, receiverId, wasmBytes) {
-  // Action::DeployContract = variant 0, { code: Vec<u8> }
-  // See near-primitives/src/views.rs: ActionView::DeployContract
+  // Action::DeployContract = variant 1, { code: Vec<u8> }
+  // Build action payload separately
+  const actionBytes = cat(
+    new Uint8Array([1]),         // Action enum: 1 = DeployContract
+    borshBytes(wasmBytes),       // code: Vec<u8>
+  );
+  // Build tx using the same header as buildTx (which works for FunctionCall)
   return cat(
     borshStr(signerId),          // signer_id
     new Uint8Array([0]),         // PublicKey enum: 0 = ed25519
@@ -85,8 +91,7 @@ function buildDeployTx(signerId, pubKeyBytes, nonce, blockHash, receiverId, wasm
     borshStr(receiverId),        // receiver_id
     blockHash,                   // 32 bytes
     u32(1),                      // actions vec length = 1
-    new Uint8Array([1]),         // Action enum: 1 = DeployContract
-    borshBytes(wasmBytes),       // code
+    actionBytes,                 // DeployContract action
   );
 }
 
@@ -149,6 +154,14 @@ async function signAndBroadcast(rpcUrl, accountId, seed, pubKey, receiverId, met
   return rpc(rpcUrl, 'broadcast_tx_commit', [b64encode(signedBytes)]);
 }
 
+// ─── Sign pre-built raw tx bytes and broadcast ───────────
+async function signAndSendRaw(rpcUrl, seed, txBytes) {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', txBytes));
+  const sig = await sign(hash, seed);
+  const signedBytes = cat(txBytes, new Uint8Array([0]), sig);
+  return rpc(rpcUrl, 'broadcast_tx_commit', [b64encode(signedBytes)]);
+}
+
 // ─── CORS + response ────────────────────────────────────────
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 function jsonRes(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } }); }
@@ -172,6 +185,207 @@ export default {
     const RPC_URL = env.RPC_URL || 'https://rpc.testnet.near.org';
 
     if (url.pathname === '/health') return jsonRes({ ok: true });
+
+    // Debug: return the tx hex without sending
+    if (url.pathname === '/debug-tx' && request.method === 'POST') {
+      try {
+        const { account_id } = await request.json();
+        const { seed, pubKey, accountId } = await getIdentity(env);
+
+        // Fetch the real WASM and check its integrity
+        const wasmRes = await fetch('https://82c1bd11.near-passkey-wallet.pages.dev/wallet-p256.wasm');
+        const wasmBuf = await wasmRes.arrayBuffer();
+        const wasmBytes = new Uint8Array(wasmBuf);
+        
+        // Check first 8 bytes (should be \\0asm + version)
+        const header = Array.from(wasmBytes.slice(0, 8)).map(b => b.toString(16).padStart(2,'0')).join('');
+        const hashHex = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', wasmBytes))).map(b => b.toString(16).padStart(2,'0')).join('');
+        
+        const [accessKey, block] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id, public_key: `ed25519:${base58Encode(pubKey)}` }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+        const nonce = BigInt(accessKey.nonce) + 1n;
+        const blockHash = base58Decode(block.header.hash);
+        
+        // Build and submit the deploy tx with REAL wasm
+        const txBytes = buildDeployTx(account_id, pubKey, nonce, blockHash, account_id, wasmBytes);
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', txBytes));
+        const sig = await sign(hash, seed);
+        const signedBytes = cat(txBytes, new Uint8Array([0]), sig);
+        
+        let deployResult;
+        try {
+          deployResult = await rpc(RPC_URL, 'broadcast_tx_commit', [b64encode(signedBytes)]);
+        } catch (e) {
+          deployResult = { rpcError: e.message };
+        }
+        
+        return jsonRes({
+          wasmSize: wasmBytes.length,
+          wasmHeader: header,
+          wasmSha256: hashHex.slice(0, 16),
+          txBytesLen: txBytes.length,
+          signedLen: signedBytes.length,
+          deployResult,
+        });
+      } catch (err) {
+        return jsonRes({ error: err.message, stack: err.stack?.slice(0,200) }, 500);
+      }
+    }
+
+    // ── Deploy WASM as global contract (NEP-496) ──────────
+    // POST /deploy-global-contract {}
+    // Returns { code_hash } — immutable, can be used by any account
+    if (url.pathname === '/deploy-global-contract' && request.method === 'POST') {
+      try {
+        const { seed, pubKey, accountId } = await getIdentity(env);
+        let wasmBytes;
+        const body = await request.json().catch(() => ({}));
+        if (body.wasm_base64) {
+          wasmBytes = Uint8Array.from(atob(body.wasm_base64), c => c.charCodeAt(0));
+        } else {
+          const wasmRes = await fetch('https://82c1bd11.near-passkey-wallet.pages.dev/wallet-p256.wasm');
+          if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
+          const wasmBuf = await wasmRes.arrayBuffer();
+          wasmBytes = new Uint8Array(wasmBuf);
+        }
+        if (!wasmBytes || wasmBytes.length === 0) throw new Error('No WASM bytes');
+
+        // Compute SHA256 = code_hash
+        const hashBuf = await crypto.subtle.digest('SHA-256', wasmBytes);
+        const codeHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const [accessKey, block] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: accountId, public_key: `ed25519:${base58Encode(pubKey)}` }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+        if (!accessKey || !block) throw new Error('Failed to get access key or block');
+        const nonce = BigInt(accessKey.nonce) + 1n;
+        const blockHash = base58Decode(block.header.hash);
+        if (!blockHash || blockHash.length !== 32) throw new Error(`Invalid block hash: ${JSON.stringify(block?.header?.hash)}`);
+
+        // Action enum variant 9 = DeployGlobalContract { code: Vec<u8>, deploy_mode: GlobalContractDeployMode }
+        // GlobalContractDeployMode::CodeHash = 0 (immutable, reference by hash)
+        const txBytes = cat(
+          borshStr(accountId),          // signer_id
+          new Uint8Array([0]),          // PublicKey enum: 0 = ed25519
+          pubKey,                       // 32 bytes
+          u64(nonce),                   // nonce
+          borshStr(accountId),          // receiver_id (self)
+          blockHash,                    // 32 bytes
+          u32(1),                       // actions vec length = 1
+          new Uint8Array([9]),          // Action enum: 9 = DeployGlobalContract
+          borshBytes(wasmBytes),        // code: Vec<u8>
+          new Uint8Array([0]),          // deploy_mode: 0 = CodeHash (immutable)
+        );
+
+        const result = await signAndSendRaw(RPC_URL, seed, txBytes);
+        return jsonRes({ code_hash: codeHash, tx_result: result });
+      } catch (err) {
+        return jsonRes({ error: `deploy-global-contract: ${err.message}` }, 500);
+      }
+    }
+
+    // ── Create wallet using global contract (NEP-496) ──────
+    // POST /create-wallet-global { name, public_key, code_hash }
+    // Creates testnet account, installs global contract, calls w_init
+    if (url.pathname === '/create-wallet-global' && request.method === 'POST') {
+      try {
+        const { name, public_key, code_hash } = await request.json();
+        if (!name || !public_key) return jsonRes({ error: 'Missing name or public_key' }, 400);
+        if (name.includes('.') || name.length > 64 || name.length < 2) {
+          return jsonRes({ error: 'Invalid name (2-64 chars, no dots)' }, 400);
+        }
+        const hash = code_hash || 'auto'; // if not provided, will need to look up
+
+        const { seed, pubKey, accountId } = await getIdentity(env);
+        const newAccountId = `${name}.testnet`;
+
+        // Check if account exists
+        try {
+          await rpc(RPC_URL, 'query', { request_type: 'view_account', finality: 'final', account_id: newAccountId });
+          return jsonRes({ error: `Account ${newAccountId} already exists` }, 409);
+        } catch (e) { /* expected — account doesn't exist */ }
+
+        // Step 1: Create account via testnet helper
+        const pubKeyB58 = base58Encode(pubKey);
+        const helperRes = await fetch('https://helper.testnet.near.org/account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newAccountId, newAccountPublicKey: `ed25519:${pubKeyB58}` }),
+        });
+        if (!helperRes.ok) {
+          const err = await helperRes.text();
+          return jsonRes({ error: `Failed to create account: ${err}` }, 500);
+        }
+
+        // Step 2: Install global contract on the new account
+        const [accessKey, block] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: accountId, public_key: `ed25519:${pubKeyB58}` }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+        const nonce = BigInt(accessKey.nonce) + 1n;
+        const blockHash = base58Decode(block.header.hash);
+
+        // Action: UseGlobalContract (variant 10) { contract_identifier: GlobalContractIdentifier::CodeHash(32 bytes) }
+        const codeHashBytes = new Uint8Array(hash.match(/.{2}/g).map(h => parseInt(h, 16)));
+        const installTxBytes = cat(
+          borshStr(accountId),
+          new Uint8Array([0]),
+          pubKey,
+          u64(nonce),
+          borshStr(newAccountId),
+          blockHash,
+          u32(2),
+          // Action 10: UseGlobalContract { contract_identifier: CodeHash(CryptoHash) }
+          new Uint8Array([10]),
+          new Uint8Array([0]),  // GlobalContractIdentifier::CodeHash = 0
+          codeHashBytes,
+          // Action 0: CreateAccount (already created, but need to set up)
+          // Actually just add the user's passkey as full access key
+          // Action 5: AddKey { public_key, access_key: { nonce: 0, permission: FullAccess = 0 } }
+          new Uint8Array([5]),
+          new Uint8Array([0]),  // PublicKey enum: 0 = ed25519
+          base58Decode(public_key.replace('ed25519:', '')),
+          u64(0n),             // access_key nonce
+          new Uint8Array([0]), // AccessKeyPermission: 0 = FullAccess
+        );
+
+        const installResult = await signAndSendRaw(RPC_URL, seed, installTxBytes);
+
+        // Step 3: Call w_init on the new account to set passkey public key
+        const [accessKey2, block2] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: accountId, public_key: `ed25519:${pubKeyB58}` }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+        const nonce2 = BigInt(accessKey2.nonce) + 1n;
+        const blockHash2 = base58Decode(block2.header.hash);
+
+        const initArgs = JSON.stringify({ public_key });
+        const initResult = await signAndSendRaw(RPC_URL, seed, buildTx(accountId, pubKey, nonce2, blockHash2, newAccountId, 'w_init', new TextEncoder().encode(initArgs), 300_000_000_000_000n, 0n));
+
+        // Step 4: Add relay FC key for gas sponsorship
+        const [accessKey3, block3] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: accountId, public_key: `ed25519:${pubKeyB58}` }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+        const nonce3 = BigInt(accessKey3.nonce) + 1n;
+        const blockHash3 = base58Decode(block3.header.hash);
+
+        const addKeyResult = await signAndSendRaw(RPC_URL, seed, buildAddFCTx(accountId, pubKey, nonce3, blockHash3, newAccountId, pubKey, 5_000_000_000_000_000_000_000_000n, ['w_execute_signed', 'w_execute_session']));
+
+        return jsonRes({
+          account_id: newAccountId,
+          code_hash: hash,
+          install_tx: installResult,
+          init_tx: initResult,
+          add_key_tx: addKeyResult,
+        });
+      } catch (err) {
+        return jsonRes({ error: `create-wallet-global: ${err.message}` }, 500);
+      }
+    }
 
     // ── Create root account: alice.testnet ──────────────────
     // POST /create-root { name, public_key }
@@ -240,60 +454,43 @@ export default {
     // WASM is fetched from the static hosting — no need to send 500KB in the body
     if (url.pathname === '/deploy-wallet' && request.method === 'POST') {
       try {
-        const { account_id, public_key, wasm_base64 } = await request.json();
+        const { account_id, public_key } = await request.json();
         if (!account_id || !public_key) {
           return jsonRes({ error: 'Missing account_id or public_key' }, 400);
         }
 
-        const { seed, pubKey, accountId } = await getIdentity(env);
+        const { seed, pubKey } = await getIdentity(env);
 
-        // Get WASM: either from the request body or fetch from known URL
-        let wasmBytes;
-        if (wasm_base64) {
-          wasmBytes = b64decode(wasm_base64);
-        } else {
-          // Fetch WASM from the wallet's static hosting
-          const wasmRes = await fetch('https://nostr-websocket-client.near-passkey-wallet.pages.dev/wallet-p256.wasm');
-          if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
-          const wasmBuf = await wasmRes.arrayBuffer();
-          wasmBytes = new Uint8Array(wasmBuf);
-        }
+        // Get WASM from CDN
+        const wasmRes = await fetch('https://82c1bd11.near-passkey-wallet.pages.dev/wallet-p256.wasm');
+        if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
+        const wasmBytes = new Uint8Array(await wasmRes.arrayBuffer());
 
-        // Step 1: Deploy wallet WASM (using buildDeployTx with correct Action variant)
-        const [accessKey, block] = await Promise.all([
-          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: account_id, public_key: `ed25519:${base58Encode(pubKey)}` }),
-          rpc(RPC_URL, 'block', { finality: 'final' }),
-        ]);
+        // Build near-api-js Account with raw key
+        const fullKey = new Uint8Array(64);
+        fullKey.set(seed, 0);
+        fullKey.set(pubKey, 32);
+        const secretKey = 'ed25519:' + base58Encode(fullKey);
+        const account = new Account(account_id, RPC_URL, secretKey);
 
-        const nonce = BigInt(accessKey.nonce) + 1n;
-        const blockHash = base58Decode(block.header.hash);
+        // Step 1: Deploy contract
+        const deployResult = await account.deployContract(wasmBytes);
 
-        // DeployContract: Action enum variant 1
-        const deployTxBytes = buildDeployTx(account_id, pubKey, nonce, blockHash, account_id, wasmBytes);
-        const deployHash = new Uint8Array(await crypto.subtle.digest('SHA-256', deployTxBytes));
-        const deploySig = await sign(deployHash, seed);
-        const deploySigned = cat(deployTxBytes, new Uint8Array([0]), deploySig);
+        // Step 2: Initialize with public_key
+        const initResult = await account.callFunction({
+          contractId: account_id,
+          methodName: 'w_init',
+          args: { public_key },
+          gas: DEFAULT_GAS.toString(),
+        });
 
-        const deployResult = await rpc(RPC_URL, 'broadcast_tx_commit', [b64encode(deploySigned)]);
-
-        // Step 2: Call w_init(public_key)
-        const initArgs = new TextEncoder().encode(JSON.stringify({ public_key }));
-        const initResult = await signAndBroadcast(RPC_URL, account_id, seed, pubKey, account_id, 'w_init', initArgs, DEFAULT_GAS, 0n);
-
-        // Step 3: Add relay's FC key scoped to w_execute_signed
-        // This lets the relay submit signed transactions on behalf of the wallet
-        const [addKeyAccessKey, addKeyBlock] = await Promise.all([
-          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: account_id, public_key: `ed25519:${base58Encode(pubKey)}` }),
-          rpc(RPC_URL, 'block', { finality: 'final' }),
-        ]);
-        const addKeyNonce = BigInt(addKeyAccessKey.nonce) + 1n;
-        const addKeyBlockHash = base58Decode(addKeyBlock.header.hash);
-        const allowance = BigInt('5000000000000000000000000'); // 5 NEAR
-        const addKeyTxBytes = buildAddFCTx(account_id, pubKey, addKeyNonce, addKeyBlockHash, account_id, pubKey, allowance, ['w_execute_signed', 'w_execute_session']);
-        const addKeyHash = new Uint8Array(await crypto.subtle.digest('SHA-256', addKeyTxBytes));
-        const addKeySig = await sign(addKeyHash, seed);
-        const addKeySigned = cat(addKeyTxBytes, new Uint8Array([0]), addKeySig);
-        await rpc(RPC_URL, 'broadcast_tx_commit', [b64encode(addKeySigned)]);
+        // Step 3: Add relay's FC key scoped to w_execute_signed + w_execute_session
+        await account.addFunctionCallAccessKey({
+          publicKey: `ed25519:${base58Encode(pubKey)}`,
+          contractId: account_id,
+          methodNames: ['w_execute_signed', 'w_execute_session'],
+          allowance: '5000000000000000000000000', // 5 NEAR
+        });
 
         return jsonRes({
           account_id,
@@ -323,7 +520,7 @@ export default {
         if (wasm_base64) {
           wasmBytes = b64decode(wasm_base64);
         } else {
-          const wasmRes = await fetch('https://nostr-websocket-client.near-passkey-wallet.pages.dev/wallet-p256.wasm');
+          const wasmRes = await fetch('https://82c1bd11.near-passkey-wallet.pages.dev/wallet-p256.wasm');
           if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
           wasmBytes = new Uint8Array(await wasmRes.arrayBuffer());
         }
@@ -470,10 +667,30 @@ export default {
         const { seed, pubKey, accountId } = await getIdentity(env);
 
         const walletId = wallet_account_id || 'pwallet1.testnet';
+
+        // For w_execute_session: sign as relay (gork-agent.testnet), call wallet contract
+        // The contract verifies the session key signature internally — no FC key needed
+        if (method_name === 'w_execute_session') {
+          const result = await signAndBroadcast(RPC_URL, accountId, seed, pubKey, walletId, 'w_execute_session', argsBytes, 300_000_000_000_000n, 0n);
+
+          let returnValue = null;
+          if (result.status?.SuccessValue) {
+            try {
+              const decoded = atob(result.status.SuccessValue);
+              returnValue = JSON.parse(decoded);
+            } catch (e) {}
+          }
+
+          return jsonRes({
+            tx_hash: result.transaction?.hash,
+            status: Object.keys(result.status || {})[0] || 'unknown',
+            return_value: returnValue,
+          });
+        }
+
+        // For w_execute_signed: sign as the wallet account (needs FC key on wallet)
         const receiver = receiver_id || walletId;
         const method = method_name || 'w_execute_signed';
-
-        // The relay's key is an FC key on the wallet account — sign as the wallet
         const result = await signAndBroadcast(RPC_URL, walletId, seed, pubKey, receiver, method, argsBytes, 300_000_000_000_000n, 1n);
 
         // Decode SuccessValue — now returns the MPC signature inline (no more promise.detach)
