@@ -485,12 +485,17 @@ export default {
         });
 
         // Step 3: Add relay's FC key scoped to w_execute_signed + w_execute_session
-        await account.addFunctionCallAccessKey({
-          publicKey: `ed25519:${base58Encode(pubKey)}`,
-          contractId: account_id,
-          methodNames: ['w_execute_signed', 'w_execute_session'],
-          allowance: '5000000000000000000000000', // 5 NEAR
-        });
+        // Key may already exist (create-root adds it), ignore error
+        try {
+          await account.addFunctionCallAccessKey({
+            publicKey: `ed25519:${base58Encode(pubKey)}`,
+            contractId: account_id,
+            methodNames: ['w_execute_signed', 'w_execute_session'],
+            allowance: '5000000000000000000000000', // 5 NEAR
+          });
+        } catch (e) {
+          // Key already exists — not an error
+        }
 
         return jsonRes({
           account_id,
