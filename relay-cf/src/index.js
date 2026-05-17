@@ -77,21 +77,37 @@ function buildTx(signerId, pubKeyBytes, nonce, blockHash, receiverId, methodName
 
 function buildDeployTx(signerId, pubKeyBytes, nonce, blockHash, receiverId, wasmBytes) {
   // Action::DeployContract = variant 1, { code: Vec<u8> }
-  // Build action payload separately
   const actionBytes = cat(
     new Uint8Array([1]),         // Action enum: 1 = DeployContract
     borshBytes(wasmBytes),       // code: Vec<u8>
   );
-  // Build tx using the same header as buildTx (which works for FunctionCall)
   return cat(
-    borshStr(signerId),          // signer_id
+    borshStr(signerId),
     new Uint8Array([0]),         // PublicKey enum: 0 = ed25519
-    pubKeyBytes,                 // 32 bytes
-    u64(nonce),                  // nonce
-    borshStr(receiverId),        // receiver_id
-    blockHash,                   // 32 bytes
+    pubKeyBytes,
+    u64(nonce),
+    borshStr(receiverId),
+    blockHash,
     u32(1),                      // actions vec length = 1
-    actionBytes,                 // DeployContract action
+    actionBytes,
+  );
+}
+
+// Action::DeployGlobalContract = variant 9, { code: Vec<u8> }
+function buildGlobalDeployTx(signerId, pubKeyBytes, nonce, blockHash, wasmBytes) {
+  const actionBytes = cat(
+    new Uint8Array([9]),         // Action enum: 9 = DeployGlobalContract
+    borshBytes(wasmBytes),       // code: Vec<u8>
+  );
+  return cat(
+    borshStr(signerId),
+    new Uint8Array([0]),         // PublicKey enum: 0 = ed25519
+    pubKeyBytes,
+    u64(nonce),
+    borshStr(signerId),          // receiver_id = signer_id for global deploy
+    blockHash,
+    u32(1),
+    actionBytes,
   );
 }
 
@@ -505,6 +521,41 @@ export default {
         });
       } catch (err) {
         return jsonRes({ error: `deploy-wallet: ${err.message}` }, 500);
+      }
+    }
+
+    // ── Deploy global contract (NEP-496) ────────────────────
+    // POST /deploy-global-contract
+    // Deploys WASM once — all wallet accounts reference by code hash
+    if (url.pathname === '/deploy-global-contract' && request.method === 'POST') {
+      try {
+        const { seed, pubKey } = await getIdentity(env);
+        const accountId = `ed25519:${base58Encode(pubKey)}`;
+
+        const wasmRes = await fetch('https://82c1bd11.near-passkey-wallet.pages.dev/wallet-p256.wasm');
+        if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
+        const wasmBytes = new Uint8Array(await wasmRes.arrayBuffer());
+
+        const [accessKey, block] = await Promise.all([
+          rpc(RPC_URL, 'query', { request_type: 'view_access_key', finality: 'final', account_id: env.RELAY_ACCOUNT_ID, public_key: accountId }),
+          rpc(RPC_URL, 'block', { finality: 'final' }),
+        ]);
+
+        const nonce = BigInt(accessKey.nonce) + 1n;
+        const blockHash = base58Decode(block.header.hash);
+
+        const txBytes = buildGlobalDeployTx(env.RELAY_ACCOUNT_ID, pubKey, nonce, blockHash, wasmBytes);
+        const result = await signAndSendRaw(RPC_URL, seed, txBytes);
+
+        return jsonRes({
+          signer: env.RELAY_ACCOUNT_ID,
+          wasm_size: wasmBytes.length,
+          tx_hash: result.transaction?.hash,
+          code_hash: result.transaction?.outcome?.status?.SuccessValue || 'pending',
+          status: 'deployed',
+        });
+      } catch (err) {
+        return jsonRes({ error: `deploy-global: ${err.message}` }, 500);
       }
     }
 

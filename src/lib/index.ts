@@ -136,3 +136,10 @@ export {
   buildExecuteSignedArgs,
   buildSessionOpArgs,
 } from './relay.js';
+
+// Near Direct (session key RPC)
+export {
+  directFunctionCall,
+  directExecuteSession,
+  getAccessKey,
+} from './nearDirect.js';

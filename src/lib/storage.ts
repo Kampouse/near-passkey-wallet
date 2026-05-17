@@ -5,14 +5,18 @@ import { base64ToUint8 } from './utils.js';
 // ─── Persistence ────────────────────────────────────────
 
 export function saveWalletState(state: WalletState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  const toSave: Record<string, any> = {
     nearAccountId: state.nearAccountId,
     ethAddress: state.ethAddress,
     credentialId: state.credentialId,
     credentialRawId: state.credentialRawId, // base64
     derivedKey: state.derivedKey,
     path: state.path,
-  }));
+  };
+  if (state.activeSessionKeyId) {
+    toSave.activeSessionKeyId = state.activeSessionKeyId;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
 }
 
 export function loadWalletState(): (WalletState & { credentialRawIdUint8: Uint8Array }) | null {

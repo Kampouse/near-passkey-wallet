@@ -6,6 +6,7 @@ export interface WalletState {
   credentialRawIdUint8: Uint8Array;
   derivedKey: string;
   path: string;
+  activeSessionKeyId?: string;
 }
 
 export interface PasskeyCredential {

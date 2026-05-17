@@ -266,10 +266,21 @@ export function derToRawP256(der: Uint8Array): Uint8Array {
 
   // Strip leading 0x00 padding (added when high bit is set)
   const rStrip = (r[0] === 0x00 && r.length === 33) ? r.slice(1) : r;
-  const sStrip = (s[0] === 0x00 && s.length === 33) ? s.slice(1) : s;
+  let sStrip = (s[0] === 0x00 && s.length === 33) ? s.slice(1) : s;
 
   if (rStrip.length !== 32 || sStrip.length !== 32) {
     throw new Error(`Unexpected r/s lengths: ${rStrip.length}, ${sStrip.length}`);
+  }
+
+  // Normalize s to low-S form (contract rejects high-s for malleability protection)
+  // P-256 (secp256r1) curve order: FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+  const P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551n;
+  const sInt = BigInt('0x' + Array.from(sStrip).map(b => b.toString(16).padStart(2, '0')).join(''));
+  if (sInt > P256_ORDER / 2n) {
+    // Replace s with n - s (low-S normalization)
+    const sNorm = P256_ORDER - sInt;
+    const sNormHex = sNorm.toString(16).padStart(64, '0');
+    sStrip = new Uint8Array(sNormHex.match(/.{2}/g)!.map((hex: string) => parseInt(hex, 16)));
   }
 
   const raw = new Uint8Array(64);

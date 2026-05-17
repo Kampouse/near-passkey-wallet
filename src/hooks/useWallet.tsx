@@ -31,6 +31,7 @@ import {
   generateSessionKeyPair,
   getSessionKeys as fetchSessionKeys,
   saveSessionKey,
+  loadSessionKey,
   removeSessionKey,
   saveWalletState,
   loadWalletState,
@@ -40,6 +41,7 @@ import {
   submitViaRelay,
   buildExecuteSignedArgs,
   buildSessionOpArgs,
+  directExecuteSession,
   base58Encode,
   base64ToUint8,
   uint8ToBase64,
@@ -307,7 +309,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const pkAssertion = assertion as PublicKeyCredential;
       const credentialId = pkAssertion.id as string;
       const credentialRawId = new Uint8Array(pkAssertion.rawId);
-      addLog(`Passkey selected: ${credentialId.slice(0, 16)}...`);
+      addLog(`Passkey authenticated: ${credentialId.slice(0, 16)}...`);
+
+      // Switch to login screen so user sees progress
+      setScreen('login');
 
       // Recover account name from userHandle
       let accountId: string | null = null;
@@ -337,6 +342,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       if (!accountId) {
         addLog('New passkey detected. Enter your account name.');
         setNeedAccountId(true);
+        setScreen('welcome');
         pendingCred.current = { id: credentialId, rawIdBase64: uint8ToBase64(credentialRawId) };
         setLoading(false);
         return;
@@ -368,6 +374,51 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setWallet(walletState);
       saveWalletState(walletState);
       addLog('Wallet restored!');
+
+      // ─── Auto-create session key for self-reliant flow ───
+      try {
+        addLog('Generating session key for direct transactions...');
+        const sessionKeyPair = await generateSessionKeyPair();
+        const sessionKeyId = `session-${Date.now()}`;
+        const ttlSecs = 86400; // 24 hours
+        const now = Math.floor(Date.now() / 1000);
+        const createdAtTs = now - 30;
+
+        const ops = [{ type: 'CreateSession' as const, session_key_id: sessionKeyId, public_key: sessionKeyPair.publicKey, ttl_secs: ttlSecs }];
+        const executeArgs = buildSessionOpArgs({ accountId, ops, created_at_ts: createdAtTs });
+
+        const borshBytes = borshRequestMessageWithOps({
+          chain_id: CHAIN_ID,
+          signer_id: accountId,
+          nonce: executeArgs.msg.nonce as number,
+          created_at: createdAtTs,
+          timeout: 600,
+          ops,
+        });
+        const challenge = computeChallenge(borshBytes);
+
+        addLog('Requesting passkey signature for session key...');
+        const passkeySig = await signWithPasskey(credentialRawId, challenge);
+        const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+
+        (executeArgs as any).proof = proof;
+        addLog('Registering session key on-chain...');
+        const sessionResult = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+
+        if (sessionResult.status === 'Failure') {
+          addLog(`Session key creation failed (non-fatal): ${JSON.stringify(sessionResult).slice(0, 200)}`);
+        } else {
+          await saveSessionKey(sessionKeyId, sessionKeyPair, accountId);
+          walletState.activeSessionKeyId = sessionKeyId;
+          setWallet({ ...walletState });
+          saveWalletState(walletState);
+          addLog(`Session key "${sessionKeyId}" active — direct transactions enabled!`);
+        }
+      } catch (sessionErr: any) {
+        // Session key creation failure is non-fatal — wallet still works via relay
+        addLog(`Session key creation skipped: ${sessionErr.message}`);
+      }
+
       await refreshBalance();
       setScreen('dashboard');
     } catch (err: any) {
@@ -382,9 +433,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     if (!loginAccountId || loginAccountId.length < 3) return;
     setNeedAccountId(false);
     setLoading(true);
+    setScreen('login');
+    addLog(`Connecting to ${loginAccountId}...`);
     try {
       await nearView(loginAccountId, 'w_public_key');
+      addLog('Wallet contract verified');
       const { derivedKey, ethAddress } = await deriveEthAddress(loginAccountId, 'ethereum,1');
+      addLog(`ETH address: ${ethAddress}`);
 
       // Save credential mapping
       if (pendingCred.current) {
@@ -454,43 +509,65 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         created_at_ts: createdAtTs,
       });
 
-      // Step 5: Borsh-serialize for challenge
-      addLog('Computing challenge hash...');
-      const borshBytes = borshRequestMessageWithDAG({
-        signer_id: accountId,
-        nonce: executeArgs.msg.nonce as number,
-        created_at_ts: now - 30,
-        signArgsJson,
-      });
-      const challenge = computeChallenge(borshBytes);
+      let mpcSig: any;
 
-      // Step 6: Sign with passkey
-      addLog('Requesting passkey signature (FaceID)...');
-      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+      // ─── Try session key direct submission first ───
+      const storedKey = wallet.activeSessionKeyId
+        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
+        : null;
 
-      // Step 7: Build proof
-      const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+      if (storedKey && !storedKey.needsMigration) {
+        addLog('Submitting via session key (direct RPC)...');
+        const sessionArgs = {
+          msg: executeArgs.msg,
+          session_key_id: wallet.activeSessionKeyId,
+        };
+        const result = await directExecuteSession({
+          walletId: accountId,
+          sessionKey: storedKey,
+          requestMsg: sessionArgs,
+          gas: 300_000_000_000_000n,
+        });
 
-      // Step 8: Submit via relay
-      addLog('Submitting to wallet contract via relay...');
-      (executeArgs as any).proof = proof;
-      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+        if (result.status === 'Failure' || !result.return_value) {
+          throw new Error(`Session key tx failed: ${JSON.stringify(result).slice(0, 200)}`);
+        }
+        mpcSig = result.return_value;
+        addLog(`Direct RPC success! tx: ${result.tx_hash?.slice(0, 16)}...`);
+      } else {
+        // Fallback: passkey + relay
+        addLog('Computing challenge hash...');
+        const borshBytes = borshRequestMessageWithDAG({
+          signer_id: accountId,
+          nonce: executeArgs.msg.nonce as number,
+          created_at_ts: now - 30,
+          signArgsJson,
+        });
+        const challenge = computeChallenge(borshBytes);
 
-      if (result.status === 'Failure') {
-        throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`);
+        addLog('Requesting passkey signature (FaceID)...');
+        const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+        const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+
+        addLog('Submitting to wallet contract via relay...');
+        (executeArgs as any).proof = proof;
+        const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+
+        if (result.status === 'Failure') {
+          throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`);
+        }
+
+        if (!(result as any).return_value?.big_r) {
+          throw new Error('No MPC signature in response');
+        }
+        mpcSig = (result as any).return_value;
       }
 
-      // Step 9: Extract MPC signature
-      if (!(result as any).return_value?.big_r) {
-        throw new Error('No MPC signature in response');
-      }
-      const mpcSig = (result as any).return_value;
-
-      // Step 10: Assemble signed tx
+      // Assemble signed tx
       addLog('Assembling signed ETH transaction...');
       const signedTxHex = assembleSignedEthTx(unsignedTxHex, mpcSig, wallet.ethAddress);
 
-      // Step 11: Broadcast
+      // Broadcast
       addLog('Broadcasting to Ethereum...');
       const txHash = await broadcastEthTx(signedTxHex);
       addLog(`ETH tx broadcast! Hash: ${txHash}`);
@@ -535,29 +612,56 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         created_at_ts: createdAtTs,
       });
 
-      addLog('Computing challenge hash...');
-      const borshBytes = borshRequestMessageWithDAG({
-        signer_id: accountId,
-        nonce: executeArgs.msg.nonce as number,
-        created_at_ts: now - 30,
-        signArgsJson,
-      });
-      const challenge = computeChallenge(borshBytes);
+      let returnValue: any;
 
-      addLog('Requesting passkey signature...');
-      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+      // ─── Try session key direct submission first ───
+      const storedKey = wallet.activeSessionKeyId
+        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
+        : null;
 
-      const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+      if (storedKey && !storedKey.needsMigration) {
+        addLog('Submitting via session key (direct RPC)...');
+        const sessionArgs = {
+          msg: executeArgs.msg,
+          session_key_id: wallet.activeSessionKeyId,
+        };
+        const result = await directExecuteSession({
+          walletId: accountId,
+          sessionKey: storedKey,
+          requestMsg: sessionArgs,
+          gas: 300_000_000_000_000n,
+        });
 
-      addLog('Submitting to MPC...');
-      (executeArgs as any).proof = proof;
-      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+        if (result.status === 'Failure' || !result.return_value) {
+          throw new Error(`Session key tx failed: ${JSON.stringify(result).slice(0, 200)}`);
+        }
+        returnValue = result.return_value;
+        addLog(`Direct RPC success! tx: ${result.tx_hash?.slice(0, 16)}...`);
+      } else {
+        // Fallback: passkey + relay
+        addLog('Computing challenge hash...');
+        const borshBytes = borshRequestMessageWithDAG({
+          signer_id: accountId,
+          nonce: executeArgs.msg.nonce as number,
+          created_at_ts: now - 30,
+          signArgsJson,
+        });
+        const challenge = computeChallenge(borshBytes);
 
-      if (result.status === 'Failure') {
-        throw new Error(`MPC call failed: ${JSON.stringify(result).slice(0, 200)}`);
+        addLog('Requesting passkey signature...');
+        const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+        const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+
+        addLog('Submitting to MPC...');
+        (executeArgs as any).proof = proof;
+        const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+
+        if (result.status === 'Failure') {
+          throw new Error(`MPC call failed: ${JSON.stringify(result).slice(0, 200)}`);
+        }
+        returnValue = (result as any).return_value;
       }
 
-      const returnValue = (result as any).return_value;
       if (!returnValue || returnValue.scheme !== 'Ed25519') {
         throw new Error(`Invalid MPC response: ${returnValue?.scheme || 'no return value'}`);
       }
@@ -585,7 +689,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [wallet, solAddress, addLog]);
 
-  // ─── Send NEAR Transaction (via wallet contract w_execute_signed) ──
+  // ─── Send NEAR Transaction (session key direct or passkey relay) ──
   const handleSendNearTransaction = useCallback(async (receiverId: string, actions: any[]): Promise<{ tx_hash: string }> => {
     if (!wallet) throw new Error('No wallet');
 
@@ -614,7 +718,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const nonce = generateSecureNonce();
     const createdAtTs = now - 30;
 
-    const requestMsg = {
+    const requestMsg: Record<string, any> = {
       msg: {
         chain_id: CHAIN_ID,
         signer_id: accountId,
@@ -634,7 +738,30 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       },
     };
 
-    // Borsh-serialize for challenge
+    // ─── Try session key direct submission first ───
+    const storedKey = wallet.activeSessionKeyId
+      ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
+      : null;
+
+    if (storedKey && !storedKey.needsMigration) {
+      addLog('Submitting NEAR transaction via session key (direct RPC)...');
+      requestMsg.session_key_id = wallet.activeSessionKeyId;
+      const result = await directExecuteSession({
+        walletId: accountId,
+        sessionKey: storedKey,
+        requestMsg,
+        gas: 300_000_000_000_000n,
+      });
+
+      if (result.status === 'Failure') {
+        throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`);
+      }
+
+      addLog(`Transaction submitted (direct): ${result.tx_hash}`);
+      return { tx_hash: result.tx_hash };
+    }
+
+    // Fallback: passkey + relay
     const borshBytes = borshRequestMessageWithOps({
       chain_id: CHAIN_ID,
       signer_id: accountId,
@@ -645,16 +772,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     });
     const challenge = computeChallenge(borshBytes);
 
-    // Sign with passkey
     addLog('Requesting passkey signature...');
     const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
 
-    // Build proof
     const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
     (requestMsg as any).proof = proof;
 
-    // Submit via relay
-    addLog('Submitting NEAR transaction...');
+    addLog('Submitting NEAR transaction via relay...');
     const result = await submitViaRelay(JSON.stringify(requestMsg), accountId);
 
     if (result.status === 'Failure') {
@@ -723,6 +847,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const handleCreateSessionKey = useCallback(async () => {
     if (!wallet) return;
+
+    // Skip if we already have a valid active session key
+    if (wallet.activeSessionKeyId) {
+      const existing = await loadSessionKey(wallet.activeSessionKeyId, wallet.nearAccountId);
+      if (existing && !existing.needsMigration) {
+        addLog(`Active session key "${wallet.activeSessionKeyId}" already exists — skipping.`);
+        return;
+      }
+    }
+
     setLoading(true);
     const accountId = wallet.nearAccountId;
     try {
@@ -761,6 +895,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       }
 
       await saveSessionKey(sessionKeyId, keyPair, accountId);
+
+      // Store as active session key for direct RPC
+      const updated = { ...wallet, activeSessionKeyId: sessionKeyId };
+      setWallet(updated);
+      saveWalletState(updated);
+
       addLog(`Session key "${sessionKeyId}" created! TTL: 24 hours`);
       await handleGetSessionKeys();
     } catch (err: any) {
@@ -832,19 +972,48 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const createdAtTs = now - 30;
       const ops = [{ type: 'RevokeSession' as const, session_key_id: sessionKeyId }];
       const executeArgs = buildSessionOpArgs({ accountId, ops, created_at_ts: createdAtTs });
-      const borshBytes = borshRequestMessageWithOps({
-        chain_id: 'mainnet', signer_id: accountId, nonce: executeArgs.msg.nonce as number,
-        created_at: createdAtTs, timeout: 600, ops,
-      });
-      const challenge = computeChallenge(borshBytes);
 
       addLog(`Revoking session key "${sessionKeyId}"...`);
-      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
-      const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
-      (executeArgs as any).proof = proof;
 
-      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
-      if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
+      // ─── Try session key direct submission first ───
+      const storedKey = wallet.activeSessionKeyId
+        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
+        : null;
+
+      if (storedKey && !storedKey.needsMigration && sessionKeyId !== wallet.activeSessionKeyId) {
+        // Use active session key to revoke another (can't revoke self via session key)
+        addLog('Revoking via session key (direct RPC)...');
+        const sessionArgs = {
+          msg: executeArgs.msg,
+          session_key_id: wallet.activeSessionKeyId,
+        };
+        const result = await directExecuteSession({
+          walletId: accountId,
+          sessionKey: storedKey,
+          requestMsg: sessionArgs,
+        });
+        if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
+      } else {
+        // Fallback: passkey + relay
+        const borshBytes = borshRequestMessageWithOps({
+          chain_id: 'mainnet', signer_id: accountId, nonce: executeArgs.msg.nonce as number,
+          created_at: createdAtTs, timeout: 600, ops,
+        });
+        const challenge = computeChallenge(borshBytes);
+        const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+        const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+        (executeArgs as any).proof = proof;
+        const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+        if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
+      }
+
+      // If revoking the active session key, clear it from wallet state
+      if (sessionKeyId === wallet.activeSessionKeyId) {
+        const updated = { ...wallet };
+        delete updated.activeSessionKeyId;
+        setWallet(updated);
+        saveWalletState(updated);
+      }
 
       await removeSessionKey(sessionKeyId, accountId);
       addLog(`Session key "${sessionKeyId}" revoked!`);
@@ -866,19 +1035,30 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       const ops = [{ type: 'RevokeAllSessions' as const }];
       const executeArgs = buildSessionOpArgs({ accountId, ops, created_at_ts: createdAtTs });
+
+      addLog('Revoking all session keys...');
+
+      // RevokeAllSessions removes ALL sessions including the active one,
+      // so we must use passkey + relay (can't revoke self via session key)
       const borshBytes = borshRequestMessageWithOps({
         chain_id: 'mainnet', signer_id: accountId, nonce: executeArgs.msg.nonce as number,
         created_at: createdAtTs, timeout: 600, ops,
       });
       const challenge = computeChallenge(borshBytes);
-
-      addLog('Revoking all session keys...');
       const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
       const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
       (executeArgs as any).proof = proof;
 
       const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
       if (result.status === 'Failure') throw new Error('RevokeAllSessions failed');
+
+      // Clear active session key from wallet state
+      if (wallet.activeSessionKeyId) {
+        const updated = { ...wallet };
+        delete updated.activeSessionKeyId;
+        setWallet(updated);
+        saveWalletState(updated);
+      }
 
       for (const skId of Object.keys(sessionKeys)) {
         await removeSessionKey(skId, accountId);
