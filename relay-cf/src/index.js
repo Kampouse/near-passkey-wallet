@@ -524,6 +524,43 @@ export default {
       }
     }
 
+    // ── Upgrade wallet contract code ──────────────────────
+    // POST /upgrade-wallet { account_id }
+    // Deploys latest WASM to an existing wallet account (no re-init)
+    if (url.pathname === '/upgrade-wallet' && request.method === 'POST') {
+      try {
+        const { account_id } = await request.json();
+        if (!account_id) {
+          return jsonRes({ error: 'Missing account_id' }, 400);
+        }
+
+        const { seed, pubKey } = await getIdentity(env);
+
+        // Get WASM from CDN (latest deploy)
+        const wasmRes = await fetch('https://near-passkey-wallet.pages.dev/wallet-p256.wasm');
+        if (!wasmRes.ok) throw new Error(`Failed to fetch WASM: ${wasmRes.status}`);
+        const wasmBytes = new Uint8Array(await wasmRes.arrayBuffer());
+
+        // Build near-api-js Account with raw key
+        const fullKey = new Uint8Array(64);
+        fullKey.set(seed, 0);
+        fullKey.set(pubKey, 32);
+        const secretKey = 'ed25519:' + base58Encode(fullKey);
+        const account = new Account(account_id, RPC_URL, secretKey);
+
+        // Deploy contract code only
+        const deployResult = await account.deployContract(wasmBytes);
+
+        return jsonRes({
+          account_id,
+          deploy_tx: deployResult.transaction?.hash,
+          status: 'upgraded',
+        });
+      } catch (err) {
+        return jsonRes({ error: `upgrade-wallet: ${err.message}` }, 500);
+      }
+    }
+
     // ── Deploy global contract (NEP-496) ────────────────────
     // POST /deploy-global-contract
     // Deploys WASM once — all wallet accounts reference by code hash

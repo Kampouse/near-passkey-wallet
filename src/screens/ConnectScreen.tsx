@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '../hooks/useWallet.js';
-import { Shield, AlertTriangle, CheckCircle2, Fingerprint, ArrowRight, Loader } from 'lucide-react';
+import { Shield, AlertTriangle, CheckCircle2, Fingerprint, ArrowRight, Loader, Send, ExternalLink, AlertCircle } from 'lucide-react';
+import { NEAR_RPC } from '../lib/constants.js';
 interface ConnectParams {
   relay: string;
   session: string;
@@ -288,19 +289,7 @@ export const ConnectScreen: React.FC<{ params: ConnectParams; onDone: () => void
           )}
 
           {request.type === 'signAndSendTransaction' && (
-            <div style={{
-              background: 'rgba(255,255,255,0.05)', borderRadius: 12, padding: '12px 16px',
-              width: '100%', fontSize: 12,
-            }}>
-              <div style={{ color: 'var(--color-text-secondary)', marginBottom: 6 }}>Transaction</div>
-              <div>To: <strong>{request.receiverId}</strong></div>
-              {(request.actions || []).map((a: any, i: number) => (
-                <div key={i} style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <ArrowRight size={12} />
-                  <span>{a.type === 'Transfer' ? `Transfer ${a.params?.amount ? Number(a.params.amount) / 1e24 + ' NEAR' : ''}` : a.type}</span>
-                </div>
-              ))}
-            </div>
+            <TransactionPreview receiverId={request.receiverId || ''} actions={request.actions || []} />
           )}
 
           {request.type === 'signMessage' && (
@@ -384,3 +373,138 @@ export const ConnectScreen: React.FC<{ params: ConnectParams; onDone: () => void
     </div>
   );
 };
+
+// ─── Transaction Preview with Address Validation ──────────
+function TransactionPreview({ receiverId, actions }: { receiverId: string; actions: any[] }) {
+  const [accountValid, setAccountValid] = useState<'loading' | 'valid' | 'invalid'>('loading');
+  const [accountBalance, setAccountBalance] = useState<string>('');
+
+  useEffect(() => {
+    if (!receiverId) { setAccountValid('invalid'); return; }
+    setAccountValid('loading');
+    fetch(NEAR_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'query',
+        params: { request_type: 'view_account', account_id: receiverId, finality: 'final' },
+      }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.result) {
+          setAccountValid('valid');
+          const bal = BigInt(d.result.amount || '0');
+          setAccountBalance(formatNear(bal));
+        } else {
+          setAccountValid('invalid');
+        }
+      })
+      .catch(() => setAccountValid('invalid'));
+  }, [receiverId]);
+
+  // Parse actions
+  const totalTransfer = actions.reduce((sum: bigint, a: any) => {
+    if (a.type === 'Transfer' && a.params?.amount) {
+      try { return sum + BigInt(a.params.amount); } catch { return sum; }
+    }
+    return sum;
+  }, 0n);
+
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.05)', borderRadius: 14, padding: '14px 16px',
+      width: '100%', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      {/* Recipient */}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <Send size={11} /> Recipient
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 8,
+            background: accountValid === 'valid' ? 'rgba(16,185,129,0.15)' : accountValid === 'invalid' ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.05)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}>
+            {accountValid === 'loading' ? <Loader size={16} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-secondary)' }} /> :
+             accountValid === 'valid' ? <CheckCircle2 size={16} style={{ color: '#10b981' }} /> :
+             <AlertCircle size={16} style={{ color: '#ef4444' }} />}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, wordBreak: 'break-all' }}>{receiverId}</div>
+            <div style={{ fontSize: 11, color: accountValid === 'valid' ? '#10b981' : accountValid === 'invalid' ? '#ef4444' : 'var(--color-text-secondary)' }}>
+              {accountValid === 'loading' ? 'Checking account...' :
+               accountValid === 'valid' ? `Account exists${accountBalance ? ` · ${accountBalance} NEAR` : ''}` :
+               '⚠ Account not found on network'}
+            </div>
+          </div>
+          <a href={`https://explorer.testnet.near.org/accounts/${receiverId}`} target="_blank" rel="noopener noreferrer"
+            style={{ marginLeft: 'auto', color: 'var(--color-text-secondary)', flexShrink: 0 }}>
+            <ExternalLink size={14} />
+          </a>
+        </div>
+      </div>
+
+      {/* Total if transfer */}
+      {totalTransfer > 0n && (
+        <div style={{
+          background: 'rgba(16,185,129,0.08)', borderRadius: 10, padding: '10px 14px',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span style={{ color: 'var(--color-text-secondary)' }}>Total</span>
+          <span style={{ fontWeight: 700, fontSize: 16, color: '#10b981' }}>{formatNear(totalTransfer)} NEAR</span>
+        </div>
+      )}
+
+      {/* Actions breakdown */}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 4 }}>Actions</div>
+        {actions.map((a: any, i: number) => (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0',
+            borderTop: i > 0 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+          }}>
+            <ArrowRight size={12} style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <span style={{ fontWeight: 500 }}>{a.type}</span>
+              {a.type === 'Transfer' && a.params?.amount && (
+                <span style={{ color: 'var(--color-text-secondary)', marginLeft: 6 }}>
+                  {formatNear(BigInt(a.params.amount))} NEAR
+                </span>
+              )}
+              {a.type === 'FunctionCall' && (
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 2 }}>
+                  <div>Method: <strong>{a.params?.methodName || 'unknown'}</strong></div>
+                  {a.params?.args && (
+                    <div style={{ wordBreak: 'break-all', maxHeight: 60, overflow: 'auto', opacity: 0.7 }}>
+                      {typeof a.params.args === 'string' ? a.params.args : JSON.stringify(a.params.args)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Warning if account invalid */}
+      {accountValid === 'invalid' && (
+        <div style={{
+          background: 'rgba(239,68,68,0.1)', borderRadius: 8, padding: '8px 12px',
+          fontSize: 11, color: '#fca5a5', display: 'flex', gap: 6,
+        }}>
+          <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          This account doesn't exist. The transaction may fail.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatNear(yocto: bigint): string {
+  const whole = yocto / BigInt('1000000000000000000000000');
+  const frac = yocto % BigInt('1000000000000000000000000');
+  const fracStr = frac.toString().padStart(24, '0').replace(/0+$/, '');
+  return fracStr ? `${whole}.${fracStr}` : whole.toString();
+}

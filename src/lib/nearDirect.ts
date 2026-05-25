@@ -1,249 +1,233 @@
 /**
- * Direct NEAR RPC submission using session keys.
+ * Direct NEAR RPC submission using session keys via near-kit.
  *
- * Builds and signs NEAR transactions locally (borsh-serialized TransactionV0)
- * and submits them directly to the NEAR RPC endpoint — no relay required.
- *
- * The session key is an ed25519 CryptoKey (non-extractable) stored in IndexedDB.
+ * Architecture:
+ * - Session key is a non-extractable ed25519 CryptoKey stored in IndexedDB
+ * - near-kit handles: transaction building, borsh serialization, nonce management, RPC calls
+ * - Custom Signer function bridges IndexedDB CryptoKey → near-kit's signing interface
+ * - Custom KeyPair in InMemoryKeyStore provides the public key for nonce lookup
  */
 
-import { NEAR_RPC } from './constants.js';
-import type { StoredSessionKey } from './types.js';
-import { borshString, borshU32, borshU64, borshU128 } from './borsh.js';
-import { base58Decode, concat, uint8ToBase64 } from './utils.js';
+import { Near, InMemoryKeyStore } from 'near-kit';
+import type { KeyPair, PublicKey, Signature } from 'near-kit';
 
-// ─── NEAR RPC helpers ───────────────────────────────────
+import { CHAIN_ID } from './constants.js';
+import { borshRequestMessageWithSessionActions } from './borsh.js';
+import { loadSessionKey } from './session.js';
+import { base58Encode, base58Decode } from './utils.js';
 
-async function nearRpcCall(body: object): Promise<any> {
-  const res = await fetch(NEAR_RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(`NEAR RPC error: ${JSON.stringify(data.error)}`);
-  return data.result;
-}
+// ─── Constants ──────────────────────────────────────
 
-/** Get the current final block hash (32 bytes) */
-async function getBlockHash(): Promise<Uint8Array> {
-  const result = await nearRpcCall({
-    jsonrpc: '2.0',
-    id: 'blockhash',
-    method: 'block',
-    params: { finality: 'final' },
-  });
-  const hashB58 = result.header.hash;
-  return base58Decode(hashB58);
-}
+const KEY_TYPE_ED25519 = 0;
 
-/** Get access key info (nonce + permissions) for a public key on an account */
-export async function getAccessKey(
-  walletId: string,
-  publicKeyB58: string,
-): Promise<{ nonce: number; permission: any }> {
-  const result = await nearRpcCall({
-    jsonrpc: '2.0',
-    id: 'accesskey',
-    method: 'query',
-    params: {
-      request_type: 'view_access_key',
-      finality: 'final',
-      account_id: walletId,
-      public_key: publicKeyB58.startsWith('ed25519:') ? publicKeyB58 : `ed25519:${publicKeyB58}`,
-    },
-  });
+// ─── Custom KeyPair for nonce lookup ────────────────
+
+/**
+ * Create a fake KeyPair that provides the public key for nonce management.
+ * The actual signing is handled by the custom Signer function passed to near-kit.
+ */
+function createSessionKeyPair(publicKeyBytes: Uint8Array): KeyPair {
+  const pubKeyStr = 'ed25519:' + base58Encode(publicKeyBytes);
+
+  const pubKey: PublicKey = {
+    keyType: KEY_TYPE_ED25519,
+    data: publicKeyBytes,
+    toString: () => pubKeyStr,
+  };
+
   return {
-    nonce: result.nonce,
-    permission: result.permission,
+    publicKey: pubKey,
+    secretKey: '', // non-extractable — signing handled by Signer function
+    sign: (_message: Uint8Array): Signature => {
+      // This should never be called — the Signer function takes priority
+      throw new Error('Signing handled by Signer function, not KeyPair');
+    },
   };
 }
 
-// ─── Borsh serialization for NEAR Transaction V0 ────────
+// ─── CryptoKey signer ───────────────────────────────
 
-/**
- * Borsh-serialize an ed25519 public key.
- * Format: enum tag 0 (ed25519) + 32 bytes
- */
-function borshPublicKeyEd25519(pubKeyBytes: Uint8Array): Uint8Array {
-  return concat(new Uint8Array([0]), pubKeyBytes); // tag 0 = ed25519
-}
-
-/**
- * Borsh-serialize a FunctionCall action.
- * Action enum tag: 2
- */
-function borshFunctionCallAction(
-  methodName: string,
-  args: Uint8Array,
-  gas: bigint,
-  deposit: bigint,
-): Uint8Array {
-  return concat(
-    new Uint8Array([2]), // Action::FunctionCall tag
-    borshString(methodName),
-    borshU32(args.length), // args len as u32 (borsh vec prefix)
-    args,
-    borshU64(gas),
-    borshU128(deposit),
+async function signWithCryptoKey(
+  privateKey: CryptoKey,
+  messageHash: Uint8Array,
+): Promise<Signature> {
+  const sigBuf = await crypto.subtle.sign(
+    'Ed25519',
+    privateKey,
+    new Uint8Array(messageHash) as any,
   );
+  return {
+    keyType: KEY_TYPE_ED25519,
+    data: new Uint8Array(sigBuf),
+  };
 }
 
-// borshTransferAction is available for future use but not currently called
-// Keeping it documented for reference:
-// Action enum tag: 3, format: tag(1) + deposit(u128)
+// ─── Helper: create Near client with session key ────
 
-/** Exported for potential future use — borsh-serialize a Transfer action (tag 3) */
-export function borshTransferAction(deposit: bigint): Uint8Array {
-  return concat(
-    new Uint8Array([3]), // Action::Transfer tag
-    borshU128(deposit),
-  );
+async function createSessionNear(
+  accountId: string,
+  publicKeyBytes: Uint8Array,
+  privateKey: CryptoKey,
+): Promise<Near> {
+  const keyPair = createSessionKeyPair(publicKeyBytes);
+
+  const keyStore = new InMemoryKeyStore();
+  await keyStore.add(accountId, keyPair);
+
+  const signerFn = async (message: Uint8Array): Promise<Signature> => {
+    return signWithCryptoKey(privateKey, message);
+  };
+
+  return new Near({
+    network: 'testnet' as any,
+    keyStore,
+    signer: signerFn as any,
+    defaultSignerId: accountId,
+  });
 }
 
-/**
- * Build a borsh-serialized NEAR TransactionV0.
- * No prefix byte — just the raw transaction struct.
- */
-function borshTransaction(params: {
-  signerId: string;
-  signerPublicKeyBytes: Uint8Array;
-  nonce: bigint;
-  receiverId: string;
-  blockHash: Uint8Array;
-  actions: Uint8Array[];
-}): Uint8Array {
-  return concat(
-    borshString(params.signerId),
-    borshPublicKeyEd25519(params.signerPublicKeyBytes),
-    borshU64(params.nonce),
-    borshString(params.receiverId),
-    params.blockHash, // 32 bytes raw
-    borshU32(params.actions.length), // vec length
-    ...params.actions,
-  );
-}
+// ─── Execute via session key (w_execute_session) ─────
 
-// ─── Direct submission ──────────────────────────────────
-
-/**
- * Submit a function call to a NEAR contract using a session key.
- *
- * Builds a borsh-serialized TransactionV0, signs with ed25519 session key,
- * and broadcasts directly to NEAR RPC via `broadcast_tx_commit`.
- */
-export async function directFunctionCall(params: {
+export interface ExecuteSessionParams {
   walletId: string;
-  sessionKey: StoredSessionKey;
+  sessionKeyId: string;
+  actions: Array<{
+    action: string;
+    function_name?: string;
+    args?: string;
+    deposit?: string;
+    amount?: string;
+    min_gas?: string;
+    gas_weight?: string;
+    receiver_id?: string;
+  }>;
+}
+
+export async function directExecuteSession(
+  params: ExecuteSessionParams,
+): Promise<{ tx_hash: string }> {
+  const { walletId, sessionKeyId, actions } = params;
+
+  // Load session key from IndexedDB
+  const stored = await loadSessionKey(sessionKeyId, walletId);
+  if (!stored || !stored.privateKey || stored.needsMigration) {
+    throw new Error(`Session key "${sessionKeyId}" not found or needs migration`);
+  }
+
+  const pubKeyBytes = base58Decode(stored.publicKey.replace('ed25519:', ''));
+  const near = await createSessionNear(walletId, pubKeyBytes, stored.privateKey);
+
+  // 1. Build inner RequestMessage (contract borsh format) and sign with session key
+  const nonce = Math.floor(Math.random() * 0xFFFFFFFF);
+  const createdAtTs = Math.floor(Date.now() / 1000);
+  const createdAtRfc3339 = new Date().toISOString();
+
+  // Build the "then" promises from actions — each action needs a receiver_id
+  // For w_execute_session, actions go inside the inner msg's PromiseDAG
+  const thenPromises = actions.map(act => ({
+    receiver_id: act.receiver_id || walletId,
+    actions: [act],
+  }));
+
+  const borshMsg = borshRequestMessageWithSessionActions({
+    chain_id: CHAIN_ID,
+    signer_id: walletId,
+    nonce,
+    created_at: createdAtTs,
+    timeout: 600,
+    then: thenPromises,
+  });
+
+  // SHA256(borsh(msg)) → sign with session key → inner signature
+  const msgHash = await crypto.subtle.digest('SHA-256', borshMsg as any);
+  const innerSig = await crypto.subtle.sign('Ed25519', stored.privateKey, new Uint8Array(msgHash) as any);
+  const innerSigB58 = base58Encode(new Uint8Array(innerSig));
+
+  // 2. Build JSON args for w_execute_session
+  const argsJson = JSON.stringify({
+    msg: {
+      signer_id: walletId,
+      nonce,
+      created_at: createdAtRfc3339,
+      timeout_secs: 600,
+      actions,
+    },
+    session_key_id: sessionKeyId,
+    signature: innerSigB58,
+  });
+
+  // 3. Build and send outer NEAR tx via near-kit
+  // args are already JSON-serialized — encode to bytes since near-kit's functionCall
+  // expects object (auto-serializes) or Uint8Array (raw)
+  const argsBytes = new TextEncoder().encode(argsJson);
+  const result = await near.transaction(walletId)
+    .functionCall(
+      walletId,
+      'w_execute_session',
+      argsBytes,
+      { gas: '300 Tgas' as any, attachedDeposit: '0 yocto' as any },
+    )
+    .send();
+
+  const txHash = (result as any).transaction?.hash || 'unknown';
+  return { tx_hash: txHash };
+}
+
+// ─── Simple function call via session key ─────────────
+
+export interface FunctionCallParams {
+  walletId: string;
+  sessionKeyId: string;
   contractId: string;
   methodName: string;
-  args: Record<string, any>;
+  args: Record<string, unknown>;
   gas?: bigint;
   deposit?: bigint;
-}): Promise<{ tx_hash: string; status: string; return_value?: any }> {
-  const {
-    walletId,
-    sessionKey,
-    contractId,
-    methodName,
-    args,
-    gas = 300_000_000_000_000n,
-    deposit = 0n,
-  } = params;
-
-  // 1. Get public key in base58 form for RPC query
-  const pubKeyB58 = sessionKey.publicKey; // already "ed25519:..." format
-  const pubKeyBytes = base58Decode(pubKeyB58.replace('ed25519:', ''));
-
-  // 2. Query access key nonce + block hash in parallel
-  const [accessKey, blockHash] = await Promise.all([
-    getAccessKey(walletId, pubKeyB58),
-    getBlockHash(),
-  ]);
-
-  // Nonce must be incremented by 1 from current
-  const nonce = BigInt(accessKey.nonce) + 1n;
-
-  // 3. Serialize function call args to bytes
-  const argsBytes = new TextEncoder().encode(JSON.stringify(args));
-
-  // 4. Build the action
-  const actionBytes = borshFunctionCallAction(methodName, argsBytes, gas, deposit);
-
-  // 5. Build borsh-serialized transaction
-  const txBytes = borshTransaction({
-    signerId: walletId,
-    signerPublicKeyBytes: pubKeyBytes,
-    nonce,
-    receiverId: contractId,
-    blockHash,
-    actions: [actionBytes],
-  });
-
-  // 6. SHA256 hash the tx bytes
-  const txHash = await crypto.subtle.digest('SHA-256', txBytes.buffer as ArrayBuffer);
-  const txHashBytes = new Uint8Array(txHash);
-
-  // 7. Sign with session key (ed25519)
-  const signatureBuffer = await crypto.subtle.sign(
-    { name: 'Ed25519' },
-    sessionKey.privateKey,
-    txHashBytes.buffer as ArrayBuffer,
-  );
-  const signature = new Uint8Array(signatureBuffer);
-
-  // 8. Build signed transaction: txBytes + [0] (V0) + signature (64 bytes)
-  const signedTx = concat(txBytes, new Uint8Array([0]), signature);
-
-  // 9. Base64 encode
-  const signedTxB64 = uint8ToBase64(signedTx);
-
-  // 10. Broadcast via broadcast_tx_commit
-  const result = await nearRpcCall({
-    jsonrpc: '2.0',
-    id: 'broadcast',
-    method: 'broadcast_tx_commit',
-    params: [signedTxB64],
-  });
-
-  // Extract return value if present
-  let returnValue: any = undefined;
-  try {
-    const status = result.status;
-    if (status?.SuccessValue) {
-      const decoded = atob(status.SuccessValue);
-      try {
-        returnValue = JSON.parse(decoded);
-      } catch {
-        returnValue = decoded;
-      }
-    }
-  } catch {}
-
-  return {
-    tx_hash: result.transaction?.hash || 'unknown',
-    status: result.status?.SuccessValue !== undefined ? 'Success' : (result.status ? 'Failure' : 'unknown'),
-    return_value: returnValue,
-  };
 }
 
-/**
- * Convenience: submit a w_execute_session call directly.
- * This is the main entry point for session-key-based operations.
- */
-export async function directExecuteSession(params: {
-  walletId: string;
-  sessionKey: StoredSessionKey;
-  requestMsg: Record<string, any>;
-  gas?: bigint;
-}): Promise<{ tx_hash: string; status: string; return_value?: any }> {
-  return directFunctionCall({
-    walletId: params.walletId,
-    sessionKey: params.sessionKey,
-    contractId: params.walletId, // wallet contract call on self
-    methodName: 'w_execute_session',
-    args: params.requestMsg,
-    gas: params.gas || 300_000_000_000_000n,
-    deposit: 0n,
+export async function directFunctionCall(
+  params: FunctionCallParams,
+): Promise<{ tx_hash: string }> {
+  const { walletId, sessionKeyId, contractId, methodName, args } = params;
+
+  const stored = await loadSessionKey(sessionKeyId, walletId);
+  if (!stored || !stored.privateKey || stored.needsMigration) {
+    throw new Error(`Session key "${sessionKeyId}" not found or needs migration`);
+  }
+
+  const pubKeyBytes = base58Decode(stored.publicKey.replace('ed25519:', ''));
+  const near = await createSessionNear(walletId, pubKeyBytes, stored.privateKey);
+
+  const result = await near.transaction(walletId)
+    .functionCall(
+      contractId,
+      methodName,
+      args,
+      { gas: '30 Tgas' as any, attachedDeposit: '0 yocto' as any },
+    )
+    .send();
+
+  const txHash = (result as any).transaction?.hash || 'unknown';
+  return { tx_hash: txHash };
+}
+
+// ─── Access key lookup ────────────────────────────────
+
+export async function getAccessKey(
+  accountId: string,
+  publicKey: string,
+): Promise<{ nonce: number } | null> {
+  const keyStore = new InMemoryKeyStore();
+  const near = new Near({
+    network: 'testnet' as any,
+    keyStore,
   });
+
+  try {
+    const key = await near.getAccessKey(accountId, publicKey);
+    if (!key) return null;
+    return { nonce: key.nonce };
+  } catch {
+    return null;
+  }
 }

@@ -5,6 +5,7 @@ import {
   signWithPasskey,
   borshRequestMessageWithDAG,
   borshRequestMessageWithOps,
+  borshRequestMessageWithSessionActions,
   computeChallenge,
   buildProof,
   nearView,
@@ -41,7 +42,6 @@ import {
   submitViaRelay,
   buildExecuteSignedArgs,
   buildSessionOpArgs,
-  directExecuteSession,
   base58Encode,
   base64ToUint8,
   uint8ToBase64,
@@ -67,6 +67,7 @@ interface WalletContextValue {
   createWallet: (name: string, accountType: 'root' | 'sub') => Promise<void>;
   sendEth: (to: string, amount: string) => Promise<void>;
   sendSol: (to: string, amount: string) => Promise<void>;
+  sendNear: (receiverId: string, amountYocto: string) => Promise<void>;
   sendNearTransaction: (receiverId: string, actions: any[]) => Promise<{ tx_hash: string }>;
   deriveSolAddress: () => Promise<void>;
   deriveNostr: () => Promise<void>;
@@ -511,31 +512,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       let mpcSig: any;
 
-      // ─── Try session key direct submission first ───
-      const storedKey = wallet.activeSessionKeyId
-        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
-        : null;
-
-      if (storedKey && !storedKey.needsMigration) {
-        addLog('Submitting via session key (direct RPC)...');
-        const sessionArgs = {
-          msg: executeArgs.msg,
-          session_key_id: wallet.activeSessionKeyId,
-        };
-        const result = await directExecuteSession({
-          walletId: accountId,
-          sessionKey: storedKey,
-          requestMsg: sessionArgs,
-          gas: 300_000_000_000_000n,
-        });
-
-        if (result.status === 'Failure' || !result.return_value) {
-          throw new Error(`Session key tx failed: ${JSON.stringify(result).slice(0, 200)}`);
-        }
-        mpcSig = result.return_value;
-        addLog(`Direct RPC success! tx: ${result.tx_hash?.slice(0, 16)}...`);
-      } else {
-        // Fallback: passkey + relay
+      // ─── Always use passkey + relay for ETH (MPC sign requires return_value parsing) ───
+      {
         addLog('Computing challenge hash...');
         const borshBytes = borshRequestMessageWithDAG({
           signer_id: accountId,
@@ -614,31 +592,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       let returnValue: any;
 
-      // ─── Try session key direct submission first ───
-      const storedKey = wallet.activeSessionKeyId
-        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
-        : null;
-
-      if (storedKey && !storedKey.needsMigration) {
-        addLog('Submitting via session key (direct RPC)...');
-        const sessionArgs = {
-          msg: executeArgs.msg,
-          session_key_id: wallet.activeSessionKeyId,
-        };
-        const result = await directExecuteSession({
-          walletId: accountId,
-          sessionKey: storedKey,
-          requestMsg: sessionArgs,
-          gas: 300_000_000_000_000n,
-        });
-
-        if (result.status === 'Failure' || !result.return_value) {
-          throw new Error(`Session key tx failed: ${JSON.stringify(result).slice(0, 200)}`);
-        }
-        returnValue = result.return_value;
-        addLog(`Direct RPC success! tx: ${result.tx_hash?.slice(0, 16)}...`);
-      } else {
-        // Fallback: passkey + relay
+      // ─── Always use passkey + relay for SOL (MPC sign requires return_value parsing) ───
+      {
         addLog('Computing challenge hash...');
         const borshBytes = borshRequestMessageWithDAG({
           signer_id: accountId,
@@ -689,86 +644,142 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, [wallet, solAddress, addLog]);
 
+  // ─── Send NEAR (simple transfer via session key) ───
+  const handleSendNear = useCallback(async (receiverId: string, amountYocto: string) => {
+    if (!wallet) return;
+    setLoading(true);
+    try {
+      addLog(`Sending ${amountYocto} yoctoNEAR to ${receiverId}...`);
+      await handleSendNearTransaction(receiverId, [
+        { type: 'Transfer', params: { amount: amountYocto } },
+      ]);
+      addLog('NEAR transfer sent!');
+      await refreshBalance();
+    } catch (err: any) {
+      addLog(`Send NEAR error: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [wallet, addLog]);
+
   // ─── Send NEAR Transaction (session key direct or passkey relay) ──
   const handleSendNearTransaction = useCallback(async (receiverId: string, actions: any[]): Promise<{ tx_hash: string }> => {
     if (!wallet) throw new Error('No wallet');
 
     const accountId = wallet.nearAccountId;
 
-    // Convert near-connect actions to wallet DAG actions
+    // Convert near-connect actions to wallet DAG actions (JSON format for contract)
     const dagActions = (actions || []).map((a: any) => {
       if (a.type === 'Transfer') {
-        return { action: 'transfer', deposit: a.params?.amount || '0' };
+        return { action: 'transfer', amount: String(a.params?.amount || '0') };
       }
       if (a.type === 'FunctionCall') {
         return {
           action: 'function_call',
           function_name: a.params?.methodName || '',
           args: a.params?.args ? btoa(JSON.stringify(a.params.args)) : '',
-          deposit: a.params?.gas || '0',
-          min_gas: a.params?.gas || '30000000000000',
+          deposit: '0',
+          min_gas: String(a.params?.gas || '30000000000000'),
           gas_weight: '0',
         };
       }
-      return { action: 'transfer', deposit: '0' };
+      return { action: 'transfer', amount: '0' };
     });
 
     // Build request with ops and the NEAR actions in the DAG
     const now = Math.floor(Date.now() / 1000);
     const nonce = generateSecureNonce();
     const createdAtTs = now - 30;
+    // Contract JSON expects RFC-3339 for created_at, "timeout_secs" for timeout
+    const created_at_rfc3339 = new Date(createdAtTs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-    const requestMsg: Record<string, any> = {
-      msg: {
+    const msgJson = {
+      chain_id: CHAIN_ID,
+      signer_id: accountId,
+      nonce,
+      created_at: created_at_rfc3339,
+      timeout_secs: 600,
+      request: {
+        ops: [],
+        out: {
+          after: [],
+          then: [{
+            receiver_id: receiverId,
+            actions: dagActions,
+          }],
+        },
+      },
+    };
+
+    // ─── Try session key + relay (no Face ID, no near-kit) ───
+    const storedKey = wallet.activeSessionKeyId
+      ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
+      : null;
+
+    if (storedKey && !storedKey.needsMigration && storedKey.privateKey) {
+      addLog('Signing NEAR transaction with session key...');
+
+      // Build borsh-serialized message for contract hash verification
+      const borshBytes = borshRequestMessageWithSessionActions({
         chain_id: CHAIN_ID,
         signer_id: accountId,
         nonce,
         created_at: createdAtTs,
         timeout: 600,
-        request: {
-          ops: [],
-          out: {
-            after: [],
-            then: [{
-              receiver_id: receiverId,
-              actions: dagActions,
-            }],
-          },
-        },
-      },
-    };
-
-    // ─── Try session key direct submission first ───
-    const storedKey = wallet.activeSessionKeyId
-      ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
-      : null;
-
-    if (storedKey && !storedKey.needsMigration) {
-      addLog('Submitting NEAR transaction via session key (direct RPC)...');
-      requestMsg.session_key_id = wallet.activeSessionKeyId;
-      const result = await directExecuteSession({
-        walletId: accountId,
-        sessionKey: storedKey,
-        requestMsg,
-        gas: 300_000_000_000_000n,
+        then: [{
+          receiver_id: receiverId,
+          actions: dagActions.map(a => ({
+            action: a.action,
+            function_name: a.function_name || '',
+            args: a.args || '',
+            deposit: a.deposit || a.amount || '0',
+            min_gas: a.min_gas || '30000000000000',
+            gas_weight: a.gas_weight || '0',
+          })),
+        }],
       });
+
+      // SHA256(borsh(msg)) → sign with session key
+      const msgHash = await crypto.subtle.digest('SHA-256', borshBytes as any);
+      const sigBuf = await crypto.subtle.sign('Ed25519', storedKey.privateKey, new Uint8Array(msgHash) as any);
+      const signature = base58Encode(new Uint8Array(sigBuf));
+
+      // Build relay args for w_execute_session
+      const relayArgs = {
+        msg: msgJson,
+        session_key_id: wallet.activeSessionKeyId,
+        signature,
+      };
+
+      addLog('Submitting session-key tx via relay...');
+      const result = await submitViaRelay(JSON.stringify(relayArgs), accountId, 'w_execute_session');
 
       if (result.status === 'Failure') {
         throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`);
       }
 
-      addLog(`Transaction submitted (direct): ${result.tx_hash}`);
+      addLog(`Transaction submitted: ${result.tx_hash}`);
       return { tx_hash: result.tx_hash };
     }
 
     // Fallback: passkey + relay
-    const borshBytes = borshRequestMessageWithOps({
+    const borshBytes = borshRequestMessageWithSessionActions({
       chain_id: CHAIN_ID,
       signer_id: accountId,
       nonce,
-      created_at: now - 30,
+      created_at: createdAtTs,
       timeout: 600,
-      ops: [],
+      then: [{
+        receiver_id: receiverId,
+        actions: dagActions.map(a => ({
+          action: a.action,
+          function_name: a.function_name || '',
+          args: a.args || '',
+          deposit: a.deposit || a.amount || '0',
+          min_gas: a.min_gas || '30000000000000',
+          gas_weight: a.gas_weight || '0',
+        })),
+      }],
     });
     const challenge = computeChallenge(borshBytes);
 
@@ -776,10 +787,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
 
     const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
-    (requestMsg as any).proof = proof;
+    const relayArgs = { msg: msgJson, proof };
 
     addLog('Submitting NEAR transaction via relay...');
-    const result = await submitViaRelay(JSON.stringify(requestMsg), accountId);
+    const result = await submitViaRelay(JSON.stringify(relayArgs), accountId);
 
     if (result.status === 'Failure') {
       throw new Error(`Transaction failed: ${JSON.stringify(result).slice(0, 200)}`);
@@ -975,37 +986,17 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       addLog(`Revoking session key "${sessionKeyId}"...`);
 
-      // ─── Try session key direct submission first ───
-      const storedKey = wallet.activeSessionKeyId
-        ? await loadSessionKey(wallet.activeSessionKeyId, accountId)
-        : null;
-
-      if (storedKey && !storedKey.needsMigration && sessionKeyId !== wallet.activeSessionKeyId) {
-        // Use active session key to revoke another (can't revoke self via session key)
-        addLog('Revoking via session key (direct RPC)...');
-        const sessionArgs = {
-          msg: executeArgs.msg,
-          session_key_id: wallet.activeSessionKeyId,
-        };
-        const result = await directExecuteSession({
-          walletId: accountId,
-          sessionKey: storedKey,
-          requestMsg: sessionArgs,
-        });
-        if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
-      } else {
-        // Fallback: passkey + relay
-        const borshBytes = borshRequestMessageWithOps({
-          chain_id: 'mainnet', signer_id: accountId, nonce: executeArgs.msg.nonce as number,
-          created_at: createdAtTs, timeout: 600, ops,
-        });
-        const challenge = computeChallenge(borshBytes);
-        const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
-        const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
-        (executeArgs as any).proof = proof;
-        const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
-        if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
-      }
+      // RevokeSession requires passkey auth (ops path), always use relay
+      const borshBytes = borshRequestMessageWithOps({
+        chain_id: 'mainnet', signer_id: accountId, nonce: executeArgs.msg.nonce as number,
+        created_at: createdAtTs, timeout: 600, ops,
+      });
+      const challenge = computeChallenge(borshBytes);
+      const passkeySig = await signWithPasskey(wallet.credentialRawIdUint8, challenge);
+      const proof = buildProof(passkeySig.authenticatorData, passkeySig.clientDataJSON, passkeySig.signature);
+      (executeArgs as any).proof = proof;
+      const result = await submitViaRelay(JSON.stringify(executeArgs), accountId);
+      if (result.status === 'Failure') throw new Error(`RevokeSession failed`);
 
       // If revoking the active session key, clear it from wallet state
       if (sessionKeyId === wallet.activeSessionKeyId) {
@@ -1250,6 +1241,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     createWallet: handleCreateWallet,
     sendEth: handleSendEth,
     sendSol: handleSendSol,
+    sendNear: handleSendNear,
     sendNearTransaction: handleSendNearTransaction,
     deriveSolAddress: handleDeriveSol,
     deriveNostr: handleDeriveNostr,

@@ -67,9 +67,11 @@ export const DashboardScreen: React.FC = () => {
   // Form state
   const [sendTo, setSendTo] = useState('');
   const [sendAmount, setSendAmount] = useState('');
-  const [sendChain, setSendChain] = useState<'eth' | 'sol'>('eth');
+  const [sendChain, setSendChain] = useState<'near' | 'eth' | 'sol'>('near');
   const [solSendTo, setSolSendTo] = useState('');
   const [solSendAmount, setSolSendAmount] = useState('');
+  const [nearSendTo, setNearSendTo] = useState('');
+  const [nearSendAmount, setNearSendAmount] = useState('');
   const [bunkerRunning, setBunkerRunning] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [backupKey, setBackupKey] = useState<string | null>(null);
@@ -107,6 +109,16 @@ export const DashboardScreen: React.FC = () => {
   const handleSendEth = () => {
     if (!sendTo || !sendAmount) return;
     wallet.sendEth(sendTo, sendAmount);
+  };
+
+  const handleSendNear = () => {
+    if (!nearSendTo || !nearSendAmount) return;
+    // Parse decimal string to yoctoNEAR without floating point
+    const parts = nearSendAmount.split('.');
+    const whole = parts[0] || '0';
+    const frac = (parts[1] || '').padEnd(24, '0').slice(0, 24);
+    const yocto = (BigInt(whole) * (10n ** 24n) + BigInt(frac)).toString();
+    wallet.sendNear(nearSendTo, yocto);
   };
 
   const handleLoadSol = async () => {
@@ -407,7 +419,7 @@ export const DashboardScreen: React.FC = () => {
           <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* Chain selector */}
             <div style={{ display: 'flex', gap: 0, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
-              {(['eth', 'sol'] as const).map(chain => (
+              {(['near', 'eth', 'sol'] as const).map(chain => (
                 <button
                   key={chain}
                   onClick={() => setSendChain(chain)}
@@ -420,7 +432,7 @@ export const DashboardScreen: React.FC = () => {
                     transition: 'all var(--transition-fast)',
                   }}
                 >
-                  {chain === 'eth' ? (
+                  {chain === 'near' ? 'Ⓝ NEAR' : chain === 'eth' ? (
                     <><svg width="12" height="16" viewBox="0 0 10 14"><path d="M5 0l5 7.5L5 11 0 7.5z" fill="currentColor"/><path d="M5 11l5-3.5L5 14 0 7.5z" fill="currentColor" opacity=".6"/></svg> ETH</>
                   ) : (
                     <><svg width="12" height="12" viewBox="0 0 32 32"><path d="M4 22h18l4-4H8zm24-8H10l-4 4h18z" fill="currentColor"/></svg> SOL</>
@@ -429,7 +441,20 @@ export const DashboardScreen: React.FC = () => {
               ))}
             </div>
 
-            {sendChain === 'eth' ? (
+            {sendChain === 'near' ? (
+              <Card style={s.card}>
+                <div style={{ ...s.sectionTitle, marginBottom: 12 }}>Send NEAR</div>
+                <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 12, textAlign: 'center' }}>
+                  {wallet.nearBalance !== null && wallet.nearBalance !== undefined ? (Number(wallet.nearBalance) / 1e24).toFixed(4) : '...'} <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>NEAR</span>
+                </div>
+                <Input placeholder="Recipient (.testnet / .near)" value={nearSendTo} onChange={(e) => setNearSendTo(e.target.value)} style={{ marginBottom: 8 }} />
+                <Input placeholder="Amount (NEAR)" value={nearSendAmount} onChange={(e) => setNearSendAmount(e.target.value)} type="number" step="0.001" style={{ marginBottom: 12 }} />
+                <Button fullWidth loading={wallet.loading} disabled={wallet.loading || !nearSendTo || !nearSendAmount} onClick={handleSendNear} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <ArrowUpRight size={16} />
+                  Send NEAR
+                </Button>
+              </Card>
+            ) : sendChain === 'eth' ? (
               <Card style={s.card}>
                 <div style={{ ...s.sectionTitle, marginBottom: 12 }}>Send Ethereum</div>
                 <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 12, textAlign: 'center' }}>

@@ -85,6 +85,7 @@ export function borshRequestMessageWithSessionActions(msg: {
       function_name?: string;
       args?: string;
       deposit?: string;
+      amount?: string;
       min_gas?: string;
       gas_weight?: string;
     }>;
@@ -110,9 +111,9 @@ export function borshRequestMessageWithSessionActions(msg: {
         thenParts.push(borshU64(BigInt(act.min_gas || '30000000000000')));
         thenParts.push(borshU64(BigInt(act.gas_weight || '0')));
       } else if (act.action === 'transfer') {
-        // PromiseAction::Transfer = discriminant 0
-        thenParts.push(new Uint8Array([0]));
-        thenParts.push(borshU128(BigInt(act.deposit || '0')));
+        // PromiseAction::Transfer = discriminant 3
+        thenParts.push(new Uint8Array([3]));
+        thenParts.push(borshU128(BigInt(act.deposit || act.amount || '0')));
       }
     }
   }
