@@ -75,6 +75,7 @@ interface WalletContextValue {
   refreshBalance: () => Promise<void>;
   createSessionKey: () => Promise<void>;
   registerExternalSessionKey: (sessionKeyId: string, publicKey: string) => Promise<any>;
+  cloudExecuteNear: (actions: any[]) => Promise<{ tx_hash: string }>;
   revokeSessionKey: (id: string) => Promise<void>;
   revokeAllSessionKeys: () => Promise<void>;
   getSessionKeys: () => Promise<void>;
@@ -1270,10 +1271,19 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           const res = await fetch(DO_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ secret: Array.from(secretKey).join(','), current: currentSk ? Array.from(currentSk.secretKey ?? []).join(',') : undefined }),
+            body: JSON.stringify({ secret: Array.from(secretKey).join(','), current: currentSk ? Array.from(currentSk.secretKey ?? []).join(',') : undefined, wallet_account_id: walletRef.current?.nearAccountId }),
           });
           const out: any = await res.json();
-          addLog(out.ok ? `☁ cloud bunker synced — same npub answers 24/7` : `☁ cloud sync skipped: ${out.error}`);
+          if (out.ok && out.exec_pub_hex) {
+            localStorage.setItem('cloud_exec_pub', out.exec_pub_hex);
+            if (localStorage.getItem('cloud_exec_registered_pub') !== out.exec_pub_hex) {
+              localStorage.removeItem('cloud_exec_registered');
+            }
+            addLog(`☁ cloud bunker synced — same npub answers 24/7`);
+            addLog(`☁ cloud exec key ready — register it in Session Keys to enable tier-1`);
+          } else {
+            addLog(out.ok ? `☁ cloud bunker synced — same npub answers 24/7` : `☁ cloud sync skipped: ${out.error}`);
+          }
         } catch (e: any) {
           addLog(`☁ cloud sync failed (tab bunker still works): ${e.message}`);
         }
@@ -1347,6 +1357,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     refreshBalance,
     createSessionKey: handleCreateSessionKey,
     registerExternalSessionKey: handleRegisterExternalSessionKey,
+    cloudExecuteNear: async (actions: any[]) => {
+      const b = bunkerRef.current;
+      if (!b?.executeNearTx) throw new Error('bunker not started — start it to execute cloud-queued requests');
+      return b.executeNearTx({ actions });
+    },
     revokeSessionKey: handleRevokeSessionKey,
     revokeAllSessionKeys: handleRevokeAllSessionKeys,
     getSessionKeys: handleGetSessionKeys,

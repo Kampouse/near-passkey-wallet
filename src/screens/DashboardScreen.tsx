@@ -104,6 +104,109 @@ function AgentAccessPanel() {
   );
 }
 
+// ─── Cloud Bunker (DO twin) ──────────────────────────────────
+const DO_BASE = 'https://bunker-do.kj95hgdgnn.workers.dev';
+
+function summarizeActions(actions: any[]): string[] {
+  return (actions ?? []).map((a: any) => {
+    const dep = a.deposit && a.deposit !== '0' ? ` · attach ${a.deposit}` : '';
+    if (a.action === 'transfer' || a.amount) return `transfer ${a.amount ?? a.deposit ?? '?'} yocto → ${a.receiver_id ?? '?'}`;
+    return `${a.action}:${a.function_name ?? '?'}(${(a.args ?? '{}').slice(0, 50)}) → ${a.receiver_id ?? '?'}${dep}`;
+  });
+}
+
+function hexToB58(bytes: number[]): string {
+  const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let n = 0n; for (const b of bytes) n = n * 256n + BigInt(b);
+  let s = ''; while (n > 0n) { s = A[Number(n % 58n)] + s; n /= 58n }
+  for (const b of bytes) { if (b === 0) s = '1' + s; else break }
+  return s;
+}
+
+function CloudBunkerPanel({ wallet, bunkerRunning }: { wallet: any; bunkerRunning: boolean }) {
+  const [pending, setPending] = useState<any[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const execPub = localStorage.getItem('cloud_exec_pub');
+  const registered = localStorage.getItem('cloud_exec_registered') === 'true';
+
+  useEffect(() => {
+    if (!bunkerRunning) return;
+    let stop = false;
+    const poll = async () => {
+      try {
+        const r = await fetch(DO_BASE + '/pending');
+        const j = await r.json();
+        if (!stop) setPending(Array.isArray(j) ? j : []);
+      } catch { /* offline ok */ }
+    };
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => { stop = true; clearInterval(t); };
+  }, [bunkerRunning]);
+
+  const registerCloudKey = async () => {
+    if (!execPub) return;
+    setBusy('register');
+    try {
+      const pub = 'ed25519:' + hexToB58(JSON.parse('[' + execPub + ']'));
+      await wallet.registerExternalSessionKey('cloud-do', pub);
+      localStorage.setItem('cloud_exec_registered', 'true');
+      localStorage.setItem('cloud_exec_registered_pub', execPub);
+    } catch (e: any) {
+      alert(`register failed: ${e.message}`);
+    } finally { setBusy(null); }
+  };
+
+  const resolve = async (p: any, approve: boolean) => {
+    setBusy(p.id);
+    try {
+      let txHash: string | undefined;
+      let err: string | undefined;
+      if (approve) {
+        try {
+          const out = await wallet.cloudExecuteNear(p.actions);
+          txHash = out?.tx_hash;
+        } catch (e: any) {
+          err = `execution failed: ${e.message}`;
+        }
+      }
+      await fetch(DO_BASE + '/resolve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pend_id: p.id, approve, tx_hash: txHash, error: err ?? (approve ? undefined : 'denied by human') }),
+      });
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div style={{ marginTop: 8, fontSize: 11 }}>
+      <div style={{ color: '#9ca3af', marginBottom: 6 }}>☁ Cloud bunker (24/7)</div>
+      {execPub ? (
+        registered ? (
+          <div style={{ color: '#4ade80', marginBottom: 6 }}>✓ cloud session key registered — tier-1 auto-run live</div>
+        ) : (
+          <Button variant="secondary" fullWidth loading={busy === 'register'} onClick={registerCloudKey} style={{ marginBottom: 6 }}>
+            Register cloud session key (one FaceID)
+          </Button>
+        )
+      ) : (
+        <div style={{ color: '#6b7280', marginBottom: 6 }}>restart bunker to sync the cloud key</div>
+      )}
+      {pending.map((p) => (
+        <div key={p.id} style={{ marginTop: 8, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: 'rgba(245,158,11,0.08)' }}>
+          <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 6 }}>☁ queued value request</div>
+          {summarizeActions(p.actions).map((line, i) => (
+            <div key={i} style={{ color: '#d1d5db', marginBottom: 4, wordBreak: 'break-all', fontFamily: 'monospace' }}>{line}</div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <Button variant="primary" fullWidth disabled={busy === p.id} onClick={() => resolve(p, true)}>Approve</Button>
+            <Button variant="danger" fullWidth disabled={busy === p.id} onClick={() => resolve(p, false)}>Deny</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatNear(yocto: bigint): string {
   const near = Number(yocto) / 1e24;
   return near >= 1 ? near.toFixed(2) : near.toPrecision(3);
@@ -604,6 +707,7 @@ export const DashboardScreen: React.FC = () => {
                         </Button>
                       </div>
                       <AgentAccessPanel />
+                      <CloudBunkerPanel wallet={wallet} bunkerRunning={bunkerRunning} />
                     </div>
                   )}
                   {wallet.bunkerPending.map((p: any) => (
