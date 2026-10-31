@@ -57,7 +57,7 @@ console.log(`request ${reqId} published — waiting for approval in the wallet a
 let lastSeenIds = new Set()
 let sub = null
 function subscribeFresh() {
-  if (sub) try { sub.close([]) } catch { /* already gone */ }
+  if (sub) try { sub.close('agent-resubscribe') } catch { /* already gone */ }
   sub = pool.subscribeMany(
     RELAYS,
     [{ kinds: [KIND_BUNKER], '#p': [myPub], since: Math.floor(Date.now() / 1000) - 60 }],
