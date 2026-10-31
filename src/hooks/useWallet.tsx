@@ -1211,6 +1211,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       await newBunker.start();
       bunkerRef.current = newBunker;
       setBunkerRunning(true);
+      // BUGFIX: the bunker listens on the SESSION keypair (random, localStorage),
+      // not the MPC-derived npub. Display the key agents must actually target.
+      const { nip19 } = await import('nostr-tools')
+      _setNpub(nip19.npubEncode(pubkey))
       addLog('✓ Bunker listening on relays');
     } catch (err: any) {
       addLog(`Bunker start error: ${err.message}`);

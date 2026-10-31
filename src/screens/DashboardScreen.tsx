@@ -507,7 +507,7 @@ export const DashboardScreen: React.FC = () => {
                   <div style={{ ...s.mono, wordBreak: 'break-all', marginBottom: 10, padding: '6px 10px', background: 'rgba(0,0,0,0.3)', borderRadius: 8, fontSize: 11 }}>
                     {wallet.npub}
                   </div>
-                  {bunkerRunning ? (
+      {bunkerRunning ? (
                     <Button variant="danger" fullWidth onClick={handleStopBunker} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                       <StopCircle size={14} />
                       Stop Bunker
@@ -517,6 +517,14 @@ export const DashboardScreen: React.FC = () => {
                       <Play size={14} />
                       Start Bunker
                     </Button>
+                  )}
+                  {bunkerRunning && wallet.npub && (
+                    <div style={{ marginTop: 10, fontSize: 11, color: '#f59e0b' }}>
+                      ⚡ Bunker listening — agents send requests to THIS npub:
+                      <div style={{ ...s.mono, wordBreak: 'break-all', margin: '6px 0', padding: '6px 10px', background: 'rgba(245,158,11,0.1)', borderRadius: 8 }}>
+                        {wallet.npub}
+                      </div>
+                    </div>
                   )}
                   {wallet.bunkerPending.map((p: any) => (
                     <div key={p.id} style={{ marginTop: 10, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: 'rgba(245,158,11,0.08)' }}>
