@@ -54,41 +54,52 @@ const event = finalizeEvent(
 await Promise.any(pool.publish(RELAYS, event))
 console.log(`request ${reqId} published — waiting for approval in the wallet app…`)
 
-const sub = pool.subscribeMany(
-  RELAYS,
-  [{ kinds: [KIND_BUNKER], '#p': [myPub], since: Math.floor(Date.now() / 1000) - 10 }],
-  {
-    onevent: (e) => {
-      if (e.pubkey !== bunkerPub) return
-      try {
-        const key = nip44.getConversationKey(sk, bunkerPub)
-        const plain = nip44.decrypt(e.content, key)
-        const parsed = JSON.parse(plain)
-        // responses come as ["response"-ish] or {id, result|error}
-        const id = Array.isArray(parsed) ? parsed[1] : parsed.id
-        if (id !== reqId) return
-        const result = Array.isArray(parsed) ? parsed[2] : parsed.result
-        const error = Array.isArray(parsed) ? null : parsed.error
-        if (error) {
-          console.error(`DENIED/ERROR: ${error}`)
-        } else {
-          console.log(`EXECUTED: ${result}`)
-          try {
-            const { tx_hash } = JSON.parse(result)
-            console.log(`tx hash: ${tx_hash}`)
-            console.log(`explorer: https://testnet.nearblocks.io/tx/${tx_hash}`)
-          } catch { /* raw */ }
+let lastSeenIds = new Set()
+let sub = null
+function subscribeFresh() {
+  if (sub) try { sub.close([]) } catch { /* already gone */ }
+  sub = pool.subscribeMany(
+    RELAYS,
+    [{ kinds: [KIND_BUNKER], '#p': [myPub], since: Math.floor(Date.now() / 1000) - 60 }],
+    {
+      onevent: (e) => {
+        if (e.pubkey !== bunkerPub) return
+        if (lastSeenIds.has(e.id)) return
+        lastSeenIds.add(e.id)
+        try {
+          const key = nip44.getConversationKey(sk, bunkerPub)
+          const plain = nip44.decrypt(e.content, key)
+          const parsed = JSON.parse(plain)
+          // responses come as ["response"-ish] or {id, result|error}
+          const id = Array.isArray(parsed) ? parsed[1] : parsed.id
+          if (id !== reqId) return
+          const result = Array.isArray(parsed) ? parsed[2] : parsed.result
+          const error = Array.isArray(parsed) ? null : parsed.error
+          if (error) {
+            console.error(`DENIED/ERROR: ${error}`)
+          } else {
+            console.log(`EXECUTED: ${result}`)
+            try {
+              const { tx_hash } = JSON.parse(result)
+              console.log(`tx hash: ${tx_hash}`)
+              console.log(`explorer: https://testnet.nearblocks.io/tx/${tx_hash}`)
+            } catch { /* raw */ }
+          }
+          clearInterval(reup)
+          pool.close(RELAYS)
+          process.exit(error ? 3 : 0)
+        } catch (err) {
+          // not for us / undecryptable
         }
-        sub.close([])
-        pool.close(RELAYS)
-        process.exit(error ? 3 : 0)
-      } catch (err) {
-        // not for us / undecryptable
-      }
+      },
+      oneose: () => {},
     },
-    oneose: () => console.log('…listening for response'),
-  },
-)
+  )
+}
+// Zombie-socket fix: relays silently drop idle subscriber sockets, so re-open
+// the subscription every 5s with a 60s lookback; ids dedupe replays.
+subscribeFresh()
+const reup = setInterval(subscribeFresh, 5000)
 
 setTimeout(() => {
   console.error('timeout: no response in 5 minutes (is the bunker listening? did you approve?)')
