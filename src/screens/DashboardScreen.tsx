@@ -52,9 +52,9 @@ function AgentAccessPanel() {
     if (!v) return;
     let hex = v;
     if (v.startsWith('npub1')) {
-      import('nostr-tools/nip19').then(({ nip19 }) => {
+      import('nostr-tools/nip19').then((mod) => {
         try {
-          hex = (nip19.decode(v) as any).data;
+          hex = (mod as any).nip19 ? (mod as any).nip19.decode(v).data : (mod as any).decode(v).data;
           save(Array.from(new Set([...allowed, hex])), restrict);
           setInput('');
         } catch { setInput('invalid npub'); }
