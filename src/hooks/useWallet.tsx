@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { WalletState, Screen } from '../lib/types';
-import { directExecuteSession } from '../lib/nearDirect';
 import {
   createPasskey,
   signWithPasskey,
@@ -1234,7 +1233,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
             }
             throw new Error(`Unsupported action: ${a.action}`);
           });
-          const receivers = [...new Set(req.actions.map((a: any) => a.receiver_id || w.nearAccountId))];
+          const receivers = [...new Set<string>(req.actions.map((a: any) => a.receiver_id || w.nearAccountId))];
           let last = { tx_hash: 'unknown' };
           for (const rid of receivers) {
             const acts = toConnectActions(req.actions.filter((a: any) => (a.receiver_id || w.nearAccountId) === rid));
