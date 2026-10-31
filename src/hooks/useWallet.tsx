@@ -1258,7 +1258,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       // not the MPC-derived npub. Display the key agents must actually target.
       const { nip19 } = await import('nostr-tools')
       _setNpub(nip19.npubEncode(pubkey))
-      addLog('✓ Bunker listening on relays');
+      addLog('✓ Bunker listening on relays')
+
+      // ── Cloud twin sync (silent best-effort) ──
+      // If PRF gave us a deterministic seed, push it to the always-on Durable
+      // Object so agents reach the same npub 24/7 even when this tab is closed.
+      if (prfSeed) {
+        try {
+          const DO_URL = 'https://bunker-do.kj95hgdgnn.workers.dev/sync';
+          const currentSk = (() => { try { return JSON.parse(localStorage.getItem('nostr_session_key') || 'null') } catch { return null } })();
+          const res = await fetch(DO_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ secret: Array.from(secretKey).join(','), current: currentSk ? Array.from(currentSk.secretKey ?? []).join(',') : undefined }),
+          });
+          const out: any = await res.json();
+          addLog(out.ok ? `☁ cloud bunker synced — same npub answers 24/7` : `☁ cloud sync skipped: ${out.error}`);
+        } catch (e: any) {
+          addLog(`☁ cloud sync failed (tab bunker still works): ${e.message}`);
+        }
+      };
     } catch (err: any) {
       addLog(`Bunker start error: ${err.message}`);
     }
