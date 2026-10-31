@@ -23,7 +23,7 @@ async function tick() {
       if (prev[label] !== undefined && amt !== prev[label].amt) {
         const d = amt - prev[label].amt
         const sign = d > 0n ? '+' : ''
-        console.log(new Date().toISOString().slice(11, 19), label, 'delta', sign, d.toString(), '(' + Number(d / 10n ** 20n) / 1e4 + ' N)')
+        console.log(new Date().toISOString().slice(11, 19), label, 'delta', sign, d.toString(), '(' + Number(d) / 1e24 + ' N)')
         if (label === 'lff2' && d === TRANSFER) console.log('>>> TRANSFER FROM AGENT REQUEST LANDED <<<')
       }
       prev[label] = { amt }
