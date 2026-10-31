@@ -518,6 +518,22 @@ export const DashboardScreen: React.FC = () => {
                       Start Bunker
                     </Button>
                   )}
+                  {wallet.bunkerPending.map((p: any) => (
+                    <div key={p.id} style={{ marginTop: 10, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: 'rgba(245,158,11,0.08)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', marginBottom: 6 }}>⚡ {p.method} — agent request</div>
+                      {(p.summary ?? []).map((line: string, i: number) => (
+                        <div key={i} style={{ ...s.mono, fontSize: 11, marginBottom: 4, wordBreak: 'break-all' }}>{line}</div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <Button variant="primary" fullWidth onClick={() => wallet.bunkerApprove(p.id)}>
+                          Approve
+                        </Button>
+                        <Button variant="danger" fullWidth onClick={() => wallet.bunkerDeny(p.id)}>
+                          Deny
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
                 </>
               ) : (
                 <Button fullWidth onClick={handleDeriveNostr} loading={wallet.loading} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>

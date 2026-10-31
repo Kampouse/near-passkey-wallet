@@ -64,6 +64,8 @@ export interface PendingRequest {
   params: string[]
   clientPubkey: HexPubkey
   event: Nip46Event
+  /// signer-side decoded human summary lines
+  summary?: string[]
 }
 
 // ─── Bunker Options ───────────────────────────────────────────────────
@@ -76,6 +78,8 @@ export interface BunkerOptions {
   accountId?: string
   signFn?: (messageHash: Uint8Array) => Promise<Uint8Array>
   onRequest?: (request: PendingRequest) => void
+  /// executes sign_near_tx through the wallet contract (w_execute_session)
+  executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
 }
 
 // ─── Approved App Types ───────────────────────────────────────────────
@@ -98,3 +102,32 @@ export const DEFAULT_RELAYS: string[] = [
 ]
 
 export const AUTO_APPROVE_METHODS = ['get_public_key', 'ping', 'describe'] as const
+
+// ─── NEAR tx requests (sign_near_tx) ─────────────────────────────────
+
+/// Matches the wallet contract's action shape (ExecuteSessionParams.actions)
+export interface NearTxAction {
+  action: string // 'FunctionCall' | 'Transfer' | ...
+  function_name?: string
+  args?: string // JSON string
+  deposit?: string
+  amount?: string
+  receiver_id?: string
+}
+
+export interface NearTxRequest {
+  account_id?: string // informational; the wallet executes from ITS account
+  actions: NearTxAction[]
+}
+
+/// Human summary of a NEAR tx request — the signer's own decode (never trust the client).
+export function describeNearTxRequest(req: NearTxRequest): string[] {
+  return req.actions.map(a => {
+    if (a.action === 'Transfer' || a.amount) {
+      return `transfer ${a.amount ?? a.deposit ?? '?'} yocto → ${a.receiver_id ?? '?'}`
+    }
+    const argsShort = a.args && a.args.length > 60 ? a.args.slice(0, 60) + '…' : (a.args ?? '{}')
+    const dep = a.deposit && a.deposit !== '0' ? ` · attach ${a.deposit} yocto` : ''
+    return `${a.action}:${a.function_name ?? '?'}(${argsShort}) → ${a.receiver_id ?? '?'}${dep}`
+  })
+}

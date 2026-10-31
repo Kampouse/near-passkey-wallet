@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { WalletState, Screen } from '../lib/types';
+import { directExecuteSession } from '../lib/nearDirect';
 import {
   createPasskey,
   signWithPasskey,
@@ -90,6 +91,10 @@ interface WalletContextValue {
   setConnectParams: (p: { relay: string; session: string } | null) => void;
   startBunker: (relays?: string[]) => Promise<void>;
   stopBunker: () => void;
+  bunkerPending: any[];
+  bunkerRunning: boolean;
+  bunkerApprove: (pendingId: string) => void;
+  bunkerDeny: (pendingId: string) => void;
   logout: () => void;
   // Exposed for ConnectScreen session key registration
   buildSessionOpArgs: typeof buildSessionOpArgs;
@@ -1170,6 +1175,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   // ─── Bunker (NIP-46) ──
   const bunkerRef = useRef<any>(null);
+  const [bunkerPending, setBunkerPending] = useState<any[]>([]);
+  const [bunkerRunning, setBunkerRunning] = useState(false);
 
   const handleStartBunker = useCallback(async (relays?: string[]) => {
     addLog('Starting NIP-46 bunker...');
@@ -1184,26 +1191,51 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         pubkey,
         npub: pubkey, // Will be converted by bunker
         sessionSecretKey: secretKey,
+        accountId: wallet?.nearAccountId,
+        executeNearTx: wallet?.nearAccountId && wallet?.activeSessionKeyId ? (req: any) => {
+          const walletId = wallet.nearAccountId as string;
+          const sessionKeyId = wallet.activeSessionKeyId as string;
+          addLog(`Executing NEAR tx for agent: ${req.actions?.length ?? 0} action(s)`);
+          return directExecuteSession({
+            walletId,
+            sessionKeyId,
+            actions: req.actions,
+          });
+        } : undefined,
         onRequest: (request: any) => {
-          addLog(`Bunker request: ${request.method}`);
+          addLog(`Bunker request: ${request.method} — needs approval`);
+          setBunkerPending(prev => [...prev, request]);
         },
       });
 
       await newBunker.start();
       bunkerRef.current = newBunker;
+      setBunkerRunning(true);
       addLog('✓ Bunker listening on relays');
     } catch (err: any) {
       addLog(`Bunker start error: ${err.message}`);
     }
-  }, [addLog]);
+  }, [addLog, wallet]);
 
   const handleStopBunker = useCallback(() => {
     if (bunkerRef.current) {
       bunkerRef.current.stop();
       bunkerRef.current = null;
+      setBunkerRunning(false);
+      setBunkerPending([]);
       addLog('Bunker stopped');
     }
   }, [addLog]);
+
+  const handleBunkerApprove = useCallback((pendingId: string) => {
+    bunkerRef.current?.approveRequest(pendingId);
+    setBunkerPending(prev => prev.filter(p => p.id !== pendingId));
+  }, []);
+
+  const handleBunkerDeny = useCallback((pendingId: string) => {
+    bunkerRef.current?.denyRequest(pendingId);
+    setBunkerPending(prev => prev.filter(p => p.id !== pendingId));
+  }, []);
 
   // ─── Logout ──
   const handleLogout = useCallback(() => {
@@ -1264,6 +1296,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setConnectParams,
     startBunker: handleStartBunker,
     stopBunker: handleStopBunker,
+    bunkerPending,
+    bunkerRunning,
+    bunkerApprove: handleBunkerApprove,
+    bunkerDeny: handleBunkerDeny,
     logout: handleLogout,
     // Expose for ConnectScreen session key registration
     buildSessionOpArgs,

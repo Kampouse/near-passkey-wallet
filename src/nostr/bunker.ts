@@ -10,7 +10,7 @@ import * as nip44 from 'nostr-tools/nip44'
 import { finalizeEvent } from 'nostr-tools/pure'
 // @ts-ignore
 import { SimplePool } from 'nostr-tools/pool'
-import { KIND_BUNKER, DEFAULT_RELAYS, AUTO_APPROVE_METHODS, type BunkerOptions, type Nip46Event, type PendingRequest, type HexPubkey, type SecretKey } from './types'
+import { KIND_BUNKER, DEFAULT_RELAYS, AUTO_APPROVE_METHODS, type BunkerOptions, type Nip46Event, type PendingRequest, type HexPubkey, type SecretKey, type NearTxRequest, describeNearTxRequest } from './types'
 
 type PendingCallback = {
   resolve: (approved: boolean) => void
@@ -23,14 +23,17 @@ type PendingCallback = {
  * Listens for NIP-46 requests and responds to them.
  */
 export class Nip46Bunker {
-  relays: string[]
-  pubkey: HexPubkey
-  npub: string
-  sessionSecretKey: SecretKey | null
-  accountId?: string
-  signFn?: (messageHash: Uint8Array) => Promise<Uint8Array>
-  onRequest?: (request: PendingRequest) => void
-  
+    relays: string[]
+    pubkey: HexPubkey
+    npub: string
+    sessionSecretKey: SecretKey | null
+    accountId?: string
+    signFn?: (messageHash: Uint8Array) => Promise<Uint8Array>
+    onRequest?: (request: PendingRequest) => void
+    /// Executes NEAR actions through the wallet contract (w_execute_session).
+    /// Injected by useWallet — keeps this module free of IndexedDB/wallet deps.
+    executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
+
   // @ts-ignore - nostr-tools subpath imports work at runtime
   private _pool: InstanceType<typeof SimplePool> | null = null
   // @ts-ignore
@@ -55,7 +58,8 @@ export class Nip46Bunker {
     this.sessionSecretKey = sk || null
     this.signFn = options.signFn
     this.onRequest = options.onRequest
-    
+    this.executeNearTx = options.executeNearTx
+
     console.log('[NIP-46] Bunker created with pubkey:', this.pubkey?.slice(0, 16))
   }
 
@@ -113,6 +117,29 @@ export class Nip46Bunker {
       this._pool = null
     }
     console.log('[NIP-46] Bunker stopped')
+  }
+
+  // ─── Human approval API (wired to the UI) ──────────────────────────
+
+  /// Human-readable lines for an approval sheet. Signer-side decode (law: never
+  /// display the client's claimed summary).
+  describeRequest(method: string, params: string[]): string[] {
+    if (method === 'sign_near_tx') {
+      try {
+        return describeNearTxRequest(JSON.parse(params[0]))
+      } catch {
+        return ['(unparseable NEAR tx request — DENY)']
+      }
+    }
+    if (method === 'sign_event') {
+      try {
+        const e = JSON.parse(params[0])
+        return [`sign nostr event kind ${e.kind}: ${(e.content || '').slice(0, 80)}`]
+      } catch {
+        return ['(unparseable event)']
+      }
+    }
+    return [`${method} ${params.join(' ').slice(0, 100)}`]
   }
 
   /**
@@ -176,6 +203,7 @@ export class Nip46Bunker {
           params,
           clientPubkey: event.pubkey,
           event,
+          summary: this.describeRequest(method, params),
         })
       }
       
@@ -232,14 +260,25 @@ export class Nip46Bunker {
         return 'pong'
       
       case 'describe':
-        return JSON.stringify(['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt', 'ping', 'describe'])
+        return JSON.stringify(['get_public_key', 'sign_event', 'sign_near_tx', 'nip44_encrypt', 'nip44_decrypt', 'ping', 'describe'])
       
       case 'connect':
         return 'ack'
       
       case 'sign_event':
         return await this.signEvent(JSON.parse(params[0]))
-      
+
+      case 'sign_near_tx': {
+        // Agent requests NEAR execution through the wallet contract.
+        // NEVER auto-approved — always goes through the human pending flow.
+        const req = JSON.parse(params[0]) as NearTxRequest
+        if (!this.executeNearTx) {
+          throw new Error('sign_near_tx unavailable: wallet not connected')
+        }
+        const result = await this.executeNearTx(req)
+        return JSON.stringify(result)
+      }
+
       case 'nip44_encrypt':
         return this.nip44Encrypt(params[0], params[1])
       
