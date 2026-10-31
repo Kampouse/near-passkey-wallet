@@ -1209,17 +1209,39 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         npub: pubkey, // Will be converted by bunker
         sessionSecretKey: secretKey,
         accountId: wallet?.nearAccountId,
-        executeNearTx: (req: any) => {
+        executeNearTx: async (req: any) => {
           const w = walletRef.current;
-          if (!w?.nearAccountId || !w?.activeSessionKeyId) {
-            throw new Error('No active session key — create one in the wallet first (Session Keys → Create)');
+          if (!w?.nearAccountId) {
+            throw new Error('Login first — the wallet must be connected to execute');
           }
           addLog(`Executing NEAR tx for agent: ${req.actions?.length ?? 0} action(s)`);
-          return directExecuteSession({
-            walletId: w.nearAccountId as string,
-            sessionKeyId: w.activeSessionKeyId as string,
-            actions: req.actions,
+          // Convert contract-shape actions → near-connect actions and reuse the
+          // wallet's own execution ladder: session key if present (tier-1, no
+          // FaceID), else passkey + relay (tier-2 — FaceID chains off the
+          // Approve tap's user activation).
+          const toConnectActions = (acts: any[]) => acts.map((a: any) => {
+            if (a.action === 'transfer') {
+              return { type: 'Transfer', params: { amount: a.amount ?? a.deposit ?? '0' } };
+            }
+            if (a.action === 'function_call') {
+              const dep = a.deposit ?? '0';
+              if (dep !== '0' && !/^0+$/.test(dep)) {
+                throw new Error('function_call with attached deposit needs a session key (not supported via passkey path yet)');
+              }
+              let argsObj: any = {};
+              try { argsObj = JSON.parse(atob(a.args || 'e30=')); } catch { argsObj = {}; }
+              return { type: 'FunctionCall', params: { methodName: a.function_name, args: argsObj, gas: Number(a.min_gas) || 30000000000000 } };
+            }
+            throw new Error(`Unsupported action: ${a.action}`);
           });
+          const receivers = [...new Set(req.actions.map((a: any) => a.receiver_id || w.nearAccountId))];
+          let last = { tx_hash: 'unknown' };
+          for (const rid of receivers) {
+            const acts = toConnectActions(req.actions.filter((a: any) => (a.receiver_id || w.nearAccountId) === rid));
+            addLog(`→ ${rid}: ${acts.length} action(s)`);
+            last = await handleSendNearTransaction(rid, acts);
+          }
+          return last;
         },
         onRequest: (request: any) => {
           addLog(`Bunker request: ${request.method} — needs approval`);
