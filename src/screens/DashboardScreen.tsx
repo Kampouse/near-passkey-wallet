@@ -521,8 +521,13 @@ export const DashboardScreen: React.FC = () => {
                   {bunkerRunning && wallet.npub && (
                     <div style={{ marginTop: 10, fontSize: 11, color: '#f59e0b' }}>
                       ⚡ Bunker listening — agents send requests to THIS npub:
-                      <div style={{ ...s.mono, wordBreak: 'break-all', margin: '6px 0', padding: '6px 10px', background: 'rgba(245,158,11,0.1)', borderRadius: 8 }}>
-                        {wallet.npub}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' }}>
+                        <div style={{ ...s.mono, wordBreak: 'break-all', flex: 1, padding: '6px 10px', background: 'rgba(245,158,11,0.1)', borderRadius: 8 }}>
+                          {wallet.npub}
+                        </div>
+                        <Button variant="secondary" style={{ whiteSpace: 'nowrap' }} onClick={() => navigator.clipboard.writeText(wallet.npub || '')}>
+                          Copy
+                        </Button>
                       </div>
                     </div>
                   )}

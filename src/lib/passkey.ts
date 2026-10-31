@@ -75,3 +75,40 @@ export async function signWithPasskey(
     signature: new Uint8Array(assertion.response.signature),
   };
 }
+
+/**
+ * PRF: deterministic secret material from the passkey itself.
+ *
+ * The authenticator derives 32 bytes inside the device from the credential's
+ * internal secret + the fixed salt — same bytes on every device that holds the
+ * same synced passkey, never extractable. This is how the bunker's Nostr key
+ * becomes stable without ever storing a raw random seed as the root of trust.
+ *
+ * Returns null if the authenticator/platform doesn't support PRF.
+ */
+export async function getPrfSecret(
+  credentialRawId: Uint8Array,
+  salt: Uint8Array,
+): Promise<Uint8Array | null> {
+  try {
+    const assertion: any = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{
+          type: 'public-key',
+          id: credentialRawId as BufferSource,
+        }],
+        userVerification: 'required',
+        timeout: 60000,
+        extensions: {
+          prf: { eval: { first: salt as BufferSource } },
+        },
+      },
+    });
+    const results = assertion?.getClientExtensionResults?.()?.prf?.results;
+    if (results?.first) return new Uint8Array(results.first);
+    return null;
+  } catch {
+    return null;
+  }
+}

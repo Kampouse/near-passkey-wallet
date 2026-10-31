@@ -1180,11 +1180,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const handleStartBunker = useCallback(async (relays?: string[]) => {
     addLog('Starting NIP-46 bunker...');
+    if (!wallet?.credentialRawIdUint8) {
+      addLog('Login first — the bunker key derives from your passkey');
+      return;
+    }
     try {
       // Dynamic import to avoid loading nostr deps until needed
-      const { getOrCreateSessionKeypair, Nip46Bunker } = await import('../nostr');
+      const { getOrCreateSessionKeypairAsync, Nip46Bunker } = await import('../nostr');
+      const { getPrfSecret } = await import('../lib/passkey');
       const bunkerRelays = relays || ['wss://relay.primal.net', 'wss://nos.lol'];
-      const { secretKey, pubkey } = getOrCreateSessionKeypair();
+
+      addLog('Deriving bunker key from passkey (one FaceID)...');
+      const prfSeed = await getPrfSecret(
+        wallet.credentialRawIdUint8,
+        new TextEncoder().encode('near-bunker-nostr-v1'),
+      );
+      addLog(prfSeed
+        ? '✓ bunker key derived from passkey — same npub on every device'
+        : 'PRF not supported by this passkey — falling back to random key');
+
+      const { secretKey, pubkey } = await getOrCreateSessionKeypairAsync(prfSeed ?? undefined);
 
       const newBunker = new Nip46Bunker({
         relays: bunkerRelays,
