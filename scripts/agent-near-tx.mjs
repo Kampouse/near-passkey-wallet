@@ -39,7 +39,17 @@ if (bunkerId.startsWith('npub1')) {
 }
 
 const actions = JSON.parse(actionsJson)
-const sk = generateSecretKey()
+// Persistent agent identity: reuse scripts/.agent-key.json so the bunker can
+// allowlist us once; ephemeral if AGENT_KEY=ephemeral (for testing denial).
+import { readFileSync, writeFileSync, existsSync } from 'fs'
+const keyPath = new URL('../.agent-key.json', import.meta.url).pathname
+let sk
+if (process.env.AGENT_KEY === 'ephemeral' || !existsSync(keyPath)) {
+  sk = generateSecretKey()
+  if (process.env.AGENT_KEY !== 'ephemeral') writeFileSync(keyPath, JSON.stringify({ sk: Array.from(sk), pub: getPublicKey(sk) }))
+} else {
+  sk = new Uint8Array(JSON.parse(readFileSync(keyPath, 'utf8')).sk)
+}
 const myPub = getPublicKey(sk)
 console.log(`agent pubkey: ${myPub}`)
 console.log(`bunker:       ${bunkerPub.slice(0, 16)}…`)

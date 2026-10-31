@@ -30,11 +30,13 @@ export class Nip46Bunker {
     accountId?: string
     signFn?: (messageHash: Uint8Array) => Promise<Uint8Array>
     onRequest?: (request: PendingRequest) => void
-    /// Executes NEAR actions through the wallet contract (w_execute_session).
-    /// Injected by useWallet — keeps this module free of IndexedDB/wallet deps.
     executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
     /// relay publish results surfaced to the host app (Activity log)
     onLog?: (line: string) => void
+    /// agent pubkeys allowed to submit requests (empty + restrictAgents=false = open)
+    allowlist?: HexPubkey[]
+    /// when true, agents not in allowlist are denied
+    restrictAgents?: boolean
 
   // @ts-ignore - nostr-tools subpath imports work at runtime
   private _pool: InstanceType<typeof SimplePool> | null = null
@@ -48,6 +50,8 @@ export class Nip46Bunker {
     this.npub = options.npub
     this.accountId = options.accountId
     this.onLog = options.onLog
+    this.allowlist = options.allowlist || []
+    this.restrictAgents = options.restrictAgents || false
     
     // Validate session key
     const sk = options.sessionSecretKey
@@ -184,6 +188,14 @@ export class Nip46Bunker {
       
       console.log('[NIP-46] Method:', method, 'id:', id)
       
+      // ── Agent allowlist gate (after decrypt so we can deny with a reason) ──
+      if (this.restrictAgents && !(this.allowlist?.includes(event.pubkey))) {
+        console.log('[NIP-46] DENIED: agent not in allowlist:', event.pubkey.slice(0, 16))
+        this.onLog?.(`[bunker] denied agent ${event.pubkey.slice(0, 12)}… (not allowlisted)`)
+        await this.sendErrorResponse(event, id, 'agent not authorized — not in bunker allowlist')
+        return
+      }
+
       // Auto-approve safe methods
       if ((AUTO_APPROVE_METHODS as readonly string[]).includes(method)) {
         console.log('[NIP-46] Auto-approving:', method)

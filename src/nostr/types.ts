@@ -82,6 +82,10 @@ export interface BunkerOptions {
   executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
   /// in-app visibility for relay publish results (wired to the Activity log)
   onLog?: (line: string) => void
+  /// agent pubkeys allowed to submit requests (empty + restrictAgents=false = open)
+  allowlist?: HexPubkey[]
+  /// when true, agents not in allowlist are denied
+  restrictAgents?: boolean
 }
 
 // ─── Approved App Types ───────────────────────────────────────────────

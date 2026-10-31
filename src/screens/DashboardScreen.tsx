@@ -30,6 +30,80 @@ function shorten(addr: string, head = 8, tail = 6): string {
   return `${addr.slice(0, head)}...${addr.slice(-tail)}`;
 }
 
+// ─── Agent Access (bunker allowlist) ─────────────────────────
+const ALLOWLIST_KEY = 'bunker-agent-allowlist';
+const RESTRICT_KEY = 'bunker-restrict-agents';
+
+function AgentAccessPanel() {
+  const [allowed, setAllowed] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(ALLOWLIST_KEY) || '[]'); } catch { return []; }
+  });
+  const [restrict, setRestrict] = useState(() => localStorage.getItem(RESTRICT_KEY) === 'true');
+  const [input, setInput] = useState('');
+
+  const save = (list: string[], res: boolean) => {
+    setAllowed(list); setRestrict(res);
+    localStorage.setItem(ALLOWLIST_KEY, JSON.stringify(list));
+    localStorage.setItem(RESTRICT_KEY, String(res));
+  };
+
+  const addAgent = () => {
+    const v = input.trim();
+    if (!v) return;
+    let hex = v;
+    if (v.startsWith('npub1')) {
+      import('nostr-tools/nip19').then(({ nip19 }) => {
+        try {
+          hex = (nip19.decode(v) as any).data;
+          save(Array.from(new Set([...allowed, hex])), restrict);
+          setInput('');
+        } catch { setInput('invalid npub'); }
+      });
+    } else if (/^[0-9a-f]{64}$/.test(v)) {
+      save(Array.from(new Set([...allowed, hex])), restrict);
+      setInput('');
+    } else {
+      setInput('must be npub1… or 64-char hex');
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(245,158,11,0.3)' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#fff', cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={restrict}
+          onChange={(e) => save(allowed, e.target.checked)}
+          style={{ accentColor: '#f59e0b', width: 16, height: 16 }}
+        />
+        Only allowlisted agents
+      </label>
+      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="agent npub or hex"
+          style={{ flex: 1, fontSize: 11, padding: '6px 8px', background: '#1f1f1f', border: '1px solid #333', borderRadius: 8, color: '#fff', outline: 'none' }}
+        />
+        <Button variant="secondary" style={{ whiteSpace: 'nowrap' }} onClick={addAgent}>Add</Button>
+      </div>
+      {allowed.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          {allowed.map((hex) => (
+            <div key={hex} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, color: '#9ca3af', padding: '3px 0' }}>
+              <span className="font-mono">{hex.slice(0, 16)}…{hex.slice(-6)}</span>
+              <button onClick={() => save(allowed.filter((x) => x !== hex), restrict)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
+        Takes effect on bunker restart{restrict && allowed.length === 0 ? ' — ⚠ restrict is ON with an empty list: every agent is denied' : ''}
+      </div>
+    </div>
+  );
+}
+
 function formatNear(yocto: bigint): string {
   const near = Number(yocto) / 1e24;
   return near >= 1 ? near.toFixed(2) : near.toPrecision(3);
@@ -529,6 +603,7 @@ export const DashboardScreen: React.FC = () => {
                           Copy
                         </Button>
                       </div>
+                      <AgentAccessPanel />
                     </div>
                   )}
                   {wallet.bunkerPending.map((p: any) => (

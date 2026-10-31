@@ -1247,6 +1247,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           setBunkerPending(prev => [...prev, request]);
         },
         onLog: (line: string) => addLog(line),
+        allowlist: (() => { try { return JSON.parse(localStorage.getItem('bunker-agent-allowlist') || '[]') } catch { return [] } })(),
+        restrictAgents: localStorage.getItem('bunker-restrict-agents') === 'true',
       });
 
       await newBunker.start();
