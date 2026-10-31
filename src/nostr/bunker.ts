@@ -33,6 +33,8 @@ export class Nip46Bunker {
     /// Executes NEAR actions through the wallet contract (w_execute_session).
     /// Injected by useWallet — keeps this module free of IndexedDB/wallet deps.
     executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
+    /// relay publish results surfaced to the host app (Activity log)
+    onLog?: (line: string) => void
 
   // @ts-ignore - nostr-tools subpath imports work at runtime
   private _pool: InstanceType<typeof SimplePool> | null = null
@@ -45,6 +47,7 @@ export class Nip46Bunker {
     this.pubkey = options.pubkey
     this.npub = options.npub
     this.accountId = options.accountId
+    this.onLog = options.onLog
     
     // Validate session key
     const sk = options.sessionSecretKey
@@ -401,8 +404,9 @@ export class Nip46Bunker {
     const signedEvent = finalizeEvent(event, this.sessionSecretKey!)
     const pubs = this._pool!.publish(this.relays, signedEvent)
     Promise.allSettled(pubs).then(rs => {
-      const summary = rs.map(r => r.status === 'fulfilled' ? 'ok' : 'REJECTED')
-      console.log('[NIP-46] Response publish:', summary.join('/'))
+      const summary = rs.map((r, i) => `${this.relays[i]?.replace('wss://', '')}:${r.status === 'fulfilled' ? 'ok' : 'REJECT'}`).join(' ')
+      console.log('[NIP-46] Response publish:', summary)
+      this.onLog?.(`[bunker] response publish → ${summary}`)
       rs.forEach(r => { if (r.status === 'rejected') console.log('[NIP-46] publish rejection:', r.reason) })
     })
     console.log('[NIP-46] Response sent:', id)

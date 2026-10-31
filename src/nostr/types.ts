@@ -80,6 +80,8 @@ export interface BunkerOptions {
   onRequest?: (request: PendingRequest) => void
   /// executes sign_near_tx through the wallet contract (w_execute_session)
   executeNearTx?: (req: NearTxRequest) => Promise<{ tx_hash: string }>
+  /// in-app visibility for relay publish results (wired to the Activity log)
+  onLog?: (line: string) => void
 }
 
 // ─── Approved App Types ───────────────────────────────────────────────

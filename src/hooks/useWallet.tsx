@@ -1246,6 +1246,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           addLog(`Bunker request: ${request.method} — needs approval`);
           setBunkerPending(prev => [...prev, request]);
         },
+        onLog: (line: string) => addLog(line),
       });
 
       await newBunker.start();
