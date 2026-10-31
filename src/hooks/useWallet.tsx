@@ -1175,6 +1175,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   // ─── Bunker (NIP-46) ──
   const bunkerRef = useRef<any>(null);
+  const walletRef = useRef<WalletState | null>(null);
+  walletRef.current = wallet; // executeNearTx must never read a stale snapshot
   const [bunkerPending, setBunkerPending] = useState<any[]>([]);
   const [bunkerRunning, setBunkerRunning] = useState(false);
 
@@ -1207,16 +1209,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         npub: pubkey, // Will be converted by bunker
         sessionSecretKey: secretKey,
         accountId: wallet?.nearAccountId,
-        executeNearTx: wallet?.nearAccountId && wallet?.activeSessionKeyId ? (req: any) => {
-          const walletId = wallet.nearAccountId as string;
-          const sessionKeyId = wallet.activeSessionKeyId as string;
+        executeNearTx: (req: any) => {
+          const w = walletRef.current;
+          if (!w?.nearAccountId || !w?.activeSessionKeyId) {
+            throw new Error('No active session key — create one in the wallet first (Session Keys → Create)');
+          }
           addLog(`Executing NEAR tx for agent: ${req.actions?.length ?? 0} action(s)`);
           return directExecuteSession({
-            walletId,
-            sessionKeyId,
+            walletId: w.nearAccountId as string,
+            sessionKeyId: w.activeSessionKeyId as string,
             actions: req.actions,
           });
-        } : undefined,
+        },
         onRequest: (request: any) => {
           addLog(`Bunker request: ${request.method} — needs approval`);
           setBunkerPending(prev => [...prev, request]);

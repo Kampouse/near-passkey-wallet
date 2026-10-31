@@ -399,8 +399,12 @@ export class Nip46Bunker {
     }
     
     const signedEvent = finalizeEvent(event, this.sessionSecretKey!)
-    await this._pool!.publish(this.relays, signedEvent)
-    
+    const pubs = this._pool!.publish(this.relays, signedEvent)
+    Promise.allSettled(pubs).then(rs => {
+      const summary = rs.map(r => r.status === 'fulfilled' ? 'ok' : 'REJECTED')
+      console.log('[NIP-46] Response publish:', summary.join('/'))
+      rs.forEach(r => { if (r.status === 'rejected') console.log('[NIP-46] publish rejection:', r.reason) })
+    })
     console.log('[NIP-46] Response sent:', id)
   }
 
