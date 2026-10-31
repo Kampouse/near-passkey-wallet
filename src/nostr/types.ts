@@ -120,6 +120,16 @@ export interface NearTxRequest {
   actions: NearTxAction[]
 }
 
+/// True when NO action carries value — pure calls the wallet executes for gas only.
+/// These auto-execute without human approval (tier-1): the wallet risks nothing
+/// but a bounded gas fee, and cannot lose assets with zero attached deposit.
+export function isZeroValueRequest(req: NearTxRequest): boolean {
+  return (req.actions ?? []).every(a => {
+    const zero = (v?: string) => !v || v === '0' || /^0+$/.test(v)
+    return a.action !== 'Transfer' && zero(a.deposit) && zero(a.amount)
+  })
+}
+
 /// Human summary of a NEAR tx request — the signer's own decode (never trust the client).
 export function describeNearTxRequest(req: NearTxRequest): string[] {
   return req.actions.map(a => {

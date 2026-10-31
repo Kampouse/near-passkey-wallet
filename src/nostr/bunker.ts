@@ -10,7 +10,7 @@ import * as nip44 from 'nostr-tools/nip44'
 import { finalizeEvent } from 'nostr-tools/pure'
 // @ts-ignore
 import { SimplePool } from 'nostr-tools/pool'
-import { KIND_BUNKER, DEFAULT_RELAYS, AUTO_APPROVE_METHODS, type BunkerOptions, type Nip46Event, type PendingRequest, type HexPubkey, type SecretKey, type NearTxRequest, describeNearTxRequest } from './types'
+import { KIND_BUNKER, DEFAULT_RELAYS, AUTO_APPROVE_METHODS, type BunkerOptions, type Nip46Event, type PendingRequest, type HexPubkey, type SecretKey, type NearTxRequest, describeNearTxRequest, isZeroValueRequest } from './types'
 
 type PendingCallback = {
   resolve: (approved: boolean) => void
@@ -187,6 +187,19 @@ export class Nip46Bunker {
         const result = await this.handleMethod(method, params, event.pubkey)
         await this.sendResponse(event, id, result)
         return
+      }
+
+      // Tier-1 auto-run: sign_near_tx with zero value attached (pure calls).
+      // The wallet risks only gas; nothing with value moves without a face.
+      if (method === 'sign_near_tx') {
+        try {
+          if (isZeroValueRequest(JSON.parse(params[0]))) {
+            console.log('[NIP-46] Auto-executing zero-value sign_near_tx')
+            const result = await this.handleMethod(method, params, event.pubkey)
+            await this.sendResponse(event, id, result)
+            return
+          }
+        } catch { /* fall through to human approval on parse failure */ }
       }
       
       // Create pending request for user approval
